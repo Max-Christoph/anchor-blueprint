@@ -22,10 +22,10 @@ export function Layout({ statusTone, statusLabel, version, children }: LayoutPro
         <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-900 text-sm font-semibold text-white">
-              ET
+              AB
             </div>
             <div>
-              <p className="text-sm font-semibold tracking-tight">Enterprise Tool</p>
+              <p className="text-sm font-semibold tracking-tight">Anchor Blueprint</p>
               <p className="text-xs text-slate-500">Interne Plattform · v{version}</p>
             </div>
           </div>
@@ -54,7 +54,7 @@ export function Layout({ statusTone, statusLabel, version, children }: LayoutPro
       </main>
 
       <footer className="mx-auto max-w-6xl px-6 pb-8 text-xs text-slate-500">
-        Enterprise Tool Template · Backend Go · Worker Python/FastAPI · DB PostgreSQL 16
+        Anchor Blueprint · Backend Go · Worker Python/FastAPI · DB PostgreSQL 16
       </footer>
     </div>
   );

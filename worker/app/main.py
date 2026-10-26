@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -23,7 +23,9 @@ def configure_logging() -> None:
 
     handler = logging.StreamHandler()
     handler.setFormatter(
-        logging.Formatter('{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}')
+        logging.Formatter(
+            '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}'
+        )
     )
     root = logging.getLogger()
     root.handlers.clear()
@@ -36,13 +38,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Start-/Stop-Logging fuer saubere Container-Lebenszyklen."""
 
     configure_logging()
-    logger.info('"worker gestartet service=%s envelope=%s version=%s"', settings.service_name, settings.app_env, __version__)
+    logger.info(
+        '"worker gestartet service=%s env=%s version=%s"',
+        settings.service_name,
+        settings.app_env,
+        __version__,
+    )
     yield
     logger.info('"worker beendet"')
 
 
 app = FastAPI(
-    title="Enterprise Tool Worker",
+    title="Anchor Blueprint Worker",
     description="Leichtgewichtiger Verarbeitungs-Worker (Aggregation/Berechnung).",
     version=__version__,
     lifespan=lifespan,
@@ -65,10 +72,16 @@ async def process_calc(payload: CalcRequest) -> CalcResponse:
     try:
         summary: Summary = summarize(payload.values)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
     duration_ms: float = round((time.perf_counter() - started) * 1000.0, 3)
-    logger.info('"calc ausgefuehrt count=%d duration_ms=%s"', summary.count, duration_ms)
+    logger.info(
+        '"calc ausgefuehrt count=%d duration_ms=%s"',
+        summary.count,
+        duration_ms,
+    )
 
     return CalcResponse(
         operation=payload.operation,

@@ -1,0 +1,34 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  # Kommentare und Fehlertexte sind deutsch - misspell kennt nur Englisch.
+  disable:
+    - misspell
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - noctx
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Max-Christoph/anchor-blueprint/backend
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

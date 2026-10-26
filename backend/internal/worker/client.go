@@ -85,9 +85,9 @@ func (c *Client) Calc(ctx context.Context, req CalcRequest) (CalcResult, error) 
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return result, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return result, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return result, fmt.Errorf("%w: unexpected status %d", ErrUnavailable, resp.StatusCode)

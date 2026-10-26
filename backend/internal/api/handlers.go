@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/config"
-	"github.com/Max-Christoph/anchor-blueprint/backend/internal/middleware"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/httpx"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/store"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/worker"
 )
@@ -55,7 +55,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := h.store.Ping(ctx); err != nil {
-		h.logger.Error("health check failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		h.logger.Error("health check failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
 		respondJSON(h.logger, w, http.StatusServiceUnavailable, healthResponse{
 			Status:   "degraded",
 			Database: "down",
@@ -78,6 +78,7 @@ type dbStatus struct {
 
 type statusResponse struct {
 	Service       string   `json:"service"`
+	AuthMode      string   `json:"auth_mode"`
 	Version       string   `json:"version"`
 	Environment   string   `json:"environment"`
 	UptimeSeconds float64  `json:"uptime_seconds"`
@@ -100,12 +101,13 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	pingStart := time.Now()
 	if err := h.store.Ping(ctx); err != nil {
 		dbState.Status = "down"
-		h.logger.Warn("status db ping failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		h.logger.Warn("status db ping failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
 	}
 	dbState.LatencyMS = math.Round(float64(time.Since(pingStart).Microseconds())/1000.0*100) / 100
 
 	respondJSON(h.logger, w, http.StatusOK, statusResponse{
-		Service:       "enterprise-tool-backend",
+		Service:       "anchor-blueprint-backend",
+		AuthMode:      h.cfg.AuthMode,
 		Version:       h.cfg.Version,
 		Environment:   h.cfg.Env,
 		UptimeSeconds: math.Round(time.Since(h.started).Seconds()*100) / 100,
@@ -129,7 +131,7 @@ func (h *Handler) Data(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := h.store.ExampleEntries(ctx, 50)
 	if err != nil {
-		h.logger.Error("load entries failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		h.logger.Error("load entries failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
 		respondError(h.logger, w, r, http.StatusInternalServerError, "database_error", "could not load data")
 		return
 	}
@@ -144,7 +146,7 @@ type processResponse struct {
 
 // Process leitet den Auftrag an den Python-Worker weiter (geschuetzt).
 func (h *Handler) Process(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	r.Body = http.MaxBytesReader(w, r.Body, maxProcessBodyBytes)
 
 	var request worker.CalcRequest
@@ -173,17 +175,17 @@ func (h *Handler) Process(w http.ResponseWriter, r *http.Request) {
 	result, err := h.worker.Calc(r.Context(), request)
 	if err != nil {
 		if errors.Is(err, worker.ErrUnavailable) {
-			h.logger.Error("worker call failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+			h.logger.Error("worker call failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
 			respondError(h.logger, w, r, http.StatusBadGateway, "worker_unavailable", "worker service is not available")
 			return
 		}
-		h.logger.Error("worker call failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		h.logger.Error("worker call failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
 		respondError(h.logger, w, r, http.StatusInternalServerError, "worker_error", "worker call failed")
 		return
 	}
 
 	subject := "unknown"
-	if identity, ok := middleware.IdentityFrom(r.Context()); ok {
+	if identity, ok := httpx.IdentityFrom(r.Context()); ok {
 		subject = identity.Subject
 	}
 

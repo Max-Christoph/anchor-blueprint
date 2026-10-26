@@ -1,4 +1,4 @@
-// Command server startet die REST-API des Enterprise-Tools.
+// Command server startet die REST-API des Anchor-Blueprint-Backends.
 package main
 
 import (
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/api"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/auth"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/config"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/middleware"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/store"
@@ -41,6 +42,17 @@ func run() error {
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
+	verifier, err := buildVerifier(cfg)
+	if err != nil {
+		return fmt.Errorf("build auth verifier: %w", err)
+	}
+	if verifier.Mode() != auth.ModeJWT {
+		logger.Warn("development auth mode active - header identities are not forgery-proof, do not use in production",
+			"auth_mode", verifier.Mode(),
+			"env", cfg.Env,
+		)
+	}
+
 	// Graceful Shutdown: SIGINT/SIGTERM bricht den Context ab.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -57,15 +69,14 @@ func run() error {
 	workerClient := worker.New(cfg.WorkerURL, cfg.WorkerTimeout)
 	handler := api.NewHandler(cfg, st, workerClient, logger)
 
-	authCfg := middleware.AuthConfig{
-		BearerToken:         cfg.AuthBearerToken,
-		AllowedEmailDomains: cfg.AllowedEmailDomains,
-		PublicPaths:         []string{"/healthz", "/api/v1/status"},
+	authCfg := auth.MiddlewareConfig{
+		Verifier:    verifier,
+		PublicPaths: []string{"/healthz", "/api/v1/status"},
 	}
 
 	// Reihenfolge: RequestID -> Logging -> Recovery -> CORS -> Auth -> Router.
 	var httpHandler http.Handler = api.NewRouter(handler)
-	httpHandler = middleware.Auth(authCfg, logger)(httpHandler)
+	httpHandler = auth.Middleware(authCfg, logger)(httpHandler)
 	httpHandler = middleware.CORS(cfg.CORSAllowedOrigins)(httpHandler)
 	httpHandler = middleware.Recovery(logger)(httpHandler)
 	httpHandler = middleware.Logging(logger)(httpHandler)
@@ -87,6 +98,7 @@ func run() error {
 			"addr", cfg.HTTPAddr,
 			"env", cfg.Env,
 			"version", cfg.Version,
+			"auth_mode", verifier.Mode(),
 			"worker_url", cfg.WorkerURL,
 		)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -110,6 +122,29 @@ func run() error {
 
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// buildVerifier waehlt das Authentifizierungsverfahren aus der Konfiguration.
+func buildVerifier(cfg config.Config) (auth.Verifier, error) {
+	switch cfg.AuthMode {
+	case auth.ModeJWT:
+		return auth.NewJWTVerifier(auth.JWKSConfig{
+			Issuer:      cfg.OIDCIssuer,
+			Audience:    cfg.OIDCAudience,
+			JWKSURL:     cfg.OIDCJWKSURL,
+			CacheTTL:    cfg.OIDCJWKSCacheTTL,
+			HTTPTimeout: cfg.OIDCHTTPTimeout,
+			Leeway:      cfg.AuthClockLeeway,
+		})
+	case auth.ModeDevHeader, auth.ModeMock:
+		return auth.NewDevHeaderVerifier(auth.DevHeaderConfig{
+			AllowedEmailDomains: cfg.AllowedEmailDomains,
+			StaticToken:         cfg.AuthBearerToken,
+			ModeName:            cfg.AuthMode,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported auth mode %q", cfg.AuthMode)
+	}
 }
 
 func newLogger(level slog.Level) *slog.Logger {

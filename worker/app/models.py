@@ -24,7 +24,9 @@ class CalcRequest(BaseModel):
         """Begrenzt Laenge und schliesst NaN/Infinity aus."""
 
         if len(values) > settings.max_values:
-            raise ValueError(f"maximal {settings.max_values} Werte erlaubt, erhalten: {len(values)}")
+            raise ValueError(
+                f"maximal {settings.max_values} Werte erlaubt, erhalten: {len(values)}"
+            )
         for value in values:
             if math.isnan(value) or math.isinf(value):
                 raise ValueError("nur endliche Zahlen erlaubt")

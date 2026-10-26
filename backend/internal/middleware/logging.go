@@ -1,21 +1,14 @@
-// Package middleware enthaelt die HTTP-Middleware des Backends:
-// Request-ID, strukturiertes Logging, Panic-Recovery, CORS und Auth-Stub.
+// Package middleware enthaelt die transportnahe HTTP-Middleware des Backends:
+// Request-ID, strukturiertes Logging, Panic-Recovery und CORS.
+// Authentifizierung liegt in internal/auth.
 package middleware
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"time"
-)
 
-type contextKey string
-
-const (
-	requestIDKey contextKey = "request_id"
-	identityKey  contextKey = "identity"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/httpx"
 )
 
 // RequestID erzeugt bzw. uebernimmt eine Request-ID und legt sie in den Context
@@ -23,28 +16,12 @@ const (
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if len(id) == 0 || len(id) > 64 {
-			id = newRequestID()
+		if id == "" || len(id) > 64 {
+			id = httpx.NewRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, id)))
+		next.ServeHTTP(w, r.WithContext(httpx.WithRequestID(r.Context(), id)))
 	})
-}
-
-// RequestIDFrom liest die Request-ID aus dem Context.
-func RequestIDFrom(ctx context.Context) string {
-	if id, ok := ctx.Value(requestIDKey).(string); ok {
-		return id
-	}
-	return ""
-}
-
-func newRequestID() string {
-	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		return "fallback-" + time.Now().UTC().Format("20060102150405.000000000")
-	}
-	return hex.EncodeToString(buf)
 }
 
 // statusRecorder merkt sich Statuscode und Bytes fuer das Access-Log.
@@ -95,9 +72,9 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 				"status", status,
 				"bytes", recorder.bytes,
 				"duration_ms", float64(time.Since(start).Microseconds()) / 1000.0,
-				"request_id", RequestIDFrom(r.Context()),
+				"request_id", httpx.RequestIDFrom(r.Context()),
 			}
-			if identity, ok := IdentityFrom(r.Context()); ok {
+			if identity, ok := httpx.IdentityFrom(r.Context()); ok {
 				attrs = append(attrs, "user", identity.Subject, "auth_method", identity.Method)
 			}
 			if status >= http.StatusInternalServerError {
@@ -119,7 +96,7 @@ func Recovery(logger *slog.Logger) func(http.Handler) http.Handler {
 					logger.Error("panic recovered",
 						"panic", recovered,
 						"path", r.URL.Path,
-						"request_id", RequestIDFrom(r.Context()),
+						"request_id", httpx.RequestIDFrom(r.Context()),
 					)
 					w.Header().Set("Content-Type", "application/json; charset=utf-8")
 					w.WriteHeader(http.StatusInternalServerError)

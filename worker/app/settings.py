@@ -13,7 +13,7 @@ class Settings:
     app_env: str
     log_level: str
     max_values: int
-    service_name: str = "enterprise-tool-worker"
+    service_name: str = "anchor-blueprint-worker"
 
 
 def _get_int(key: str, fallback: int) -> int:

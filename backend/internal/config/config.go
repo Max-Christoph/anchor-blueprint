@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/auth"
 )
 
 // Config buendelt alle Laufzeiteinstellungen des Backends.
@@ -30,26 +32,45 @@ type Config struct {
 	WorkerURL     string
 	WorkerTimeout time.Duration
 
+	// AuthMode ist jwt (Standard), dev_header oder mock.
+	AuthMode string
+	// OIDC-Parameter (nur AUTH_MODE=jwt).
+	OIDCIssuer       string
+	OIDCAudience     string
+	OIDCJWKSURL      string
+	OIDCJWKSCacheTTL time.Duration
+	OIDCHTTPTimeout  time.Duration
+	AuthClockLeeway  time.Duration
+	// Dev-Modus-Parameter (AUTH_MODE=dev_header|mock).
 	AuthBearerToken     string
 	AllowedEmailDomains []string
-	CORSAllowedOrigins  []string
+
+	CORSAllowedOrigins []string
 }
 
 // Load liest die Konfiguration aus der Umgebung und validiert Pflichtwerte.
 func Load() (Config, error) {
+	mode, err := auth.Mode(getString("AUTH_MODE", auth.ModeJWT))
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		Env:                 getString("APP_ENV", "development"),
 		Version:             getString("APP_VERSION", "dev"),
 		HTTPAddr:            getString("HTTP_ADDR", ":8080"),
 		DatabaseURL:         getString("DATABASE_URL", ""),
 		WorkerURL:           strings.TrimRight(getString("WORKER_URL", "http://worker:8000"), "/"),
+		AuthMode:            mode,
+		OIDCIssuer:          getString("OIDC_ISSUER", ""),
+		OIDCAudience:        getString("OIDC_AUDIENCE", ""),
+		OIDCJWKSURL:         getString("OIDC_JWKS_URL", ""),
 		AuthBearerToken:     getString("AUTH_BEARER_TOKEN", ""),
 		AllowedEmailDomains: getCSV("AUTH_ALLOWED_EMAIL_DOMAINS"),
 		CORSAllowedOrigins:  getCSV("CORS_ALLOWED_ORIGINS"),
 		LogLevel:            parseLevel(getString("LOG_LEVEL", "info")),
 	}
 
-	var err error
 	if cfg.ReadTimeout, err = getDuration("HTTP_READ_TIMEOUT", 15*time.Second); err != nil {
 		return Config{}, err
 	}
@@ -65,6 +86,15 @@ func Load() (Config, error) {
 	if cfg.WorkerTimeout, err = getDuration("WORKER_TIMEOUT", 10*time.Second); err != nil {
 		return Config{}, err
 	}
+	if cfg.OIDCJWKSCacheTTL, err = getDuration("OIDC_JWKS_CACHE_TTL", 15*time.Minute); err != nil {
+		return Config{}, err
+	}
+	if cfg.OIDCHTTPTimeout, err = getDuration("OIDC_HTTP_TIMEOUT", 5*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.AuthClockLeeway, err = getDuration("AUTH_CLOCK_LEEWAY", 30*time.Second); err != nil {
+		return Config{}, err
+	}
 
 	maxConns, err := getInt("DB_MAX_CONNS", 10)
 	if err != nil {
@@ -78,14 +108,36 @@ func Load() (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
 	}
-	if cfg.AuthBearerToken == "" {
-		return Config{}, errors.New("AUTH_BEARER_TOKEN is required (no insecure default)")
-	}
-	if len(cfg.AllowedEmailDomains) == 0 {
-		return Config{}, errors.New("AUTH_ALLOWED_EMAIL_DOMAINS must list at least one domain")
+	if err := validateAuth(cfg); err != nil {
+		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+// validateAuth prueft die modusabhaengigen Pflichtwerte.
+func validateAuth(cfg Config) error {
+	if cfg.AuthMode == auth.ModeJWT {
+		missing := make([]string, 0, 3)
+		if cfg.OIDCIssuer == "" {
+			missing = append(missing, "OIDC_ISSUER")
+		}
+		if cfg.OIDCAudience == "" {
+			missing = append(missing, "OIDC_AUDIENCE")
+		}
+		if cfg.OIDCJWKSURL == "" {
+			missing = append(missing, "OIDC_JWKS_URL")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("AUTH_MODE=jwt requires %s", strings.Join(missing, ", "))
+		}
+		return nil
+	}
+
+	if len(cfg.AllowedEmailDomains) == 0 {
+		return fmt.Errorf("AUTH_MODE=%s requires AUTH_ALLOWED_EMAIL_DOMAINS", cfg.AuthMode)
+	}
+	return nil
 }
 
 func getString(key, fallback string) string {

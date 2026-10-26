@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/Max-Christoph/anchor-blueprint/backend/internal/middleware"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/httpx"
 )
 
 // errorBody ist das einheitliche Fehlerformat der API.
@@ -38,6 +38,6 @@ func respondError(logger *slog.Logger, w http.ResponseWriter, r *http.Request, s
 	respondJSON(logger, w, status, errorBody{Error: errorDetail{
 		Code:      code,
 		Message:   message,
-		RequestID: middleware.RequestIDFrom(r.Context()),
+		RequestID: httpx.RequestIDFrom(r.Context()),
 	}})
 }
