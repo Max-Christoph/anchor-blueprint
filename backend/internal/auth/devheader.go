@@ -16,15 +16,19 @@ type DevHeaderConfig struct {
 	AllowedEmailDomains []string
 	// StaticToken ist ein optionaler fester Bearer-Token fuer Service-Aufrufe.
 	StaticToken string
+	// DefaultRole wird gesetzt, wenn X-User-Roles fehlt (Default "User").
+	DefaultRole string
 	// ModeName landet in der Identitaet (dev_header oder mock).
 	ModeName string
 }
 
 // DevHeaderVerifier ist der Entwicklungs-Verifier: X-User-Email mit
-// Domain-Allowlist oder ein statischer Bearer-Token. Nicht fuer Produktion.
+// Domain-Allowlist, Rollen via X-User-Roles oder ein statischer Bearer-Token.
+// Nicht fuer Produktion.
 type DevHeaderVerifier struct {
 	allowedDomains map[string]struct{}
 	staticToken    string
+	defaultRole    string
 	modeName       string
 }
 
@@ -41,7 +45,11 @@ func NewDevHeaderVerifier(cfg DevHeaderConfig) (*DevHeaderVerifier, error) {
 	if modeName == "" {
 		modeName = ModeDevHeader
 	}
-	return &DevHeaderVerifier{allowedDomains: domains, staticToken: cfg.StaticToken, modeName: modeName}, nil
+	defaultRole := strings.TrimSpace(cfg.DefaultRole)
+	if defaultRole == "" {
+		defaultRole = "User"
+	}
+	return &DevHeaderVerifier{allowedDomains: domains, staticToken: cfg.StaticToken, defaultRole: defaultRole, modeName: modeName}, nil
 }
 
 // Mode implementiert Verifier.
@@ -56,7 +64,11 @@ func (v *DevHeaderVerifier) Verify(_ context.Context, credentials Credentials) (
 		if subtle.ConstantTimeCompare([]byte(token), []byte(v.staticToken)) != 1 {
 			return httpx.Identity{}, ErrInvalidToken
 		}
-		return httpx.Identity{Subject: "service-account", Method: "dev_token"}, nil
+		return httpx.Identity{
+			Subject: "service-account",
+			Roles:   []string{v.defaultRole},
+			Method:  "dev_token",
+		}, nil
 	}
 
 	email := strings.TrimSpace(credentials.UserEmail)
@@ -75,5 +87,15 @@ func (v *DevHeaderVerifier) Verify(_ context.Context, credentials Credentials) (
 		return httpx.Identity{}, fmt.Errorf("%w: email domain not allowed", ErrInvalidToken)
 	}
 
-	return httpx.Identity{Subject: address.Address, Email: address.Address, Method: v.modeName}, nil
+	roles := SplitList(credentials.UserRoles)
+	if len(roles) == 0 {
+		roles = []string{v.defaultRole}
+	}
+
+	return httpx.Identity{
+		Subject: address.Address,
+		Email:   address.Address,
+		Roles:   roles,
+		Method:  v.modeName,
+	}, nil
 }

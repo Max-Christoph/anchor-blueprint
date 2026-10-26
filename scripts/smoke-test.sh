@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke-Test gegen den laufenden Stack: Erreichbarkeit und Auth-Verhalten.
+# Smoke-Test gegen den laufenden Stack: Erreichbarkeit, Auth- und RBAC-Verhalten.
 # Beruecksichtigt AUTH_MODE (jwt | dev_header | mock).
 set -euo pipefail
 
@@ -33,17 +33,17 @@ check() {
   local actual="$3"
 
   if [[ "$actual" == "$expected" ]]; then
-    printf '  [ok]   %-52s %s\n' "$name" "$actual"
+    printf '  [ok]   %-56s %s\n' "$name" "$actual"
     PASSED=$((PASSED + 1))
     return
   fi
 
-  printf '  [FAIL] %-52s erwartet=%s ist=%s\n' "$name" "$expected" "$actual"
+  printf '  [FAIL] %-56s erwartet=%s ist=%s\n' "$name" "$expected" "$actual"
   FAILED=$((FAILED + 1))
 }
 
 skip() {
-  printf '  [skip] %-52s %s\n' "$1" "$2"
+  printf '  [skip] %-56s %s\n' "$1" "$2"
   SKIPPED=$((SKIPPED + 1))
 }
 
@@ -54,51 +54,65 @@ status_code() {
 echo "Smoke-Test gegen Backend ${BACKEND} (AUTH_MODE=${AUTH_MODE})"
 
 # --- Oeffentliche Endpunkte ------------------------------------------------
-check "GET /healthz"                     200 "$(status_code "${BACKEND}/healthz")"
-check "GET /api/v1/status"               200 "$(status_code "${BACKEND}/api/v1/status")"
+check "GET /healthz"                         200 "$(status_code "${BACKEND}/healthz")"
+check "GET /api/v1/status"                   200 "$(status_code "${BACKEND}/api/v1/status")"
 
 # --- Auth-Negativfaelle ---------------------------------------------------
-check "GET /api/v1/data (ohne Auth)"     401 "$(status_code "${BACKEND}/api/v1/data")"
-check "GET /does-not-exist (ohne Auth)"  401 "$(status_code "${BACKEND}/does-not-exist")"
+check "GET /api/v1/data (ohne Auth)"         401 "$(status_code "${BACKEND}/api/v1/data")"
+check "GET /api/v1/protected/operator (ohne Auth)" 401 "$(status_code "${BACKEND}/api/v1/protected/operator")"
+check "GET /does-not-exist (ohne Auth)"      401 "$(status_code "${BACKEND}/does-not-exist")"
 
 if [[ "$AUTH_MODE" == "jwt" ]]; then
-  skip "GET /api/v1/data (X-User-Email)"  "JWT-Modus ignoriert Header - erwartet 401"
-  check "GET /api/v1/data (X-User-Email)" 401 \
+  check "GET /api/v1/data (X-User-Email ignoriert)" 401 \
     "$(status_code -H "X-User-Email: ${DEMO_USER_EMAIL}" "${BACKEND}/api/v1/data")"
 
   if [[ -n "$SMOKE_BEARER_TOKEN" ]]; then
     AUTH_HEADER=(-H "Authorization: Bearer ${SMOKE_BEARER_TOKEN}")
-    check "GET /api/v1/data (JWT)"        200 "$(status_code "${AUTH_HEADER[@]}" "${BACKEND}/api/v1/data")"
-    check "POST /api/v1/process (JWT)"    200 \
+    check "GET /api/v1/me (JWT)"              200 "$(status_code "${AUTH_HEADER[@]}" "${BACKEND}/api/v1/me")"
+    check "GET /api/v1/data (JWT)"           200 "$(status_code "${AUTH_HEADER[@]}" "${BACKEND}/api/v1/data")"
+    check "POST /api/v1/process (JWT)"       200 \
       "$(status_code -X POST -H "Content-Type: application/json" "${AUTH_HEADER[@]}" \
             --data '{"values":[10,20,30,40]}' "${BACKEND}/api/v1/process")"
-    check "GET /does-not-exist (JWT)"     404 "$(status_code "${AUTH_HEADER[@]}" "${BACKEND}/does-not-exist")"
+    check "GET /does-not-exist (JWT)"        404 "$(status_code "${AUTH_HEADER[@]}" "${BACKEND}/does-not-exist")"
+    skip "RBAC-Rollenmatrix"                 "Rollen stammen im JWT-Modus aus den Claims (Token je Rolle noetig)"
   else
-    skip "Authentifizierte Pruefungen" "SMOKE_BEARER_TOKEN nicht gesetzt (echtes OIDC-Token noetig)"
+    skip "Authentifizierte Pruefungen"       "SMOKE_BEARER_TOKEN nicht gesetzt (echtes OIDC-Token noetig)"
   fi
 else
-  check "GET /api/v1/data (X-User-Email)" 200 \
-    "$(status_code -H "X-User-Email: ${DEMO_USER_EMAIL}" "${BACKEND}/api/v1/data")"
-  check "GET /api/v1/data (Bearer)"     200 \
-    "$(status_code -H "Authorization: Bearer ${BEARER_TOKEN}" "${BACKEND}/api/v1/data")"
+  USER=(-H "X-User-Email: ${DEMO_USER_EMAIL}")
+  OPERATOR=(-H "X-User-Email: ${DEMO_USER_EMAIL}" -H "X-User-Roles: Operator")
+  ADMIN=(-H "X-User-Email: ${DEMO_USER_EMAIL}" -H "X-User-Roles: Admin")
+  MULTI=(-H "X-User-Email: ${DEMO_USER_EMAIL}" -H "X-User-Roles: Viewer,Operator")
+
+  check "GET /api/v1/me (Default-Rolle)"   200 "$(status_code "${USER[@]}" "${BACKEND}/api/v1/me")"
+  check "GET /api/v1/data (X-User-Email)"  200 "$(status_code "${USER[@]}" "${BACKEND}/api/v1/data")"
+  check "GET /api/v1/data (Bearer)"        200 "$(status_code -H "Authorization: Bearer ${BEARER_TOKEN}" "${BACKEND}/api/v1/data")"
   check "GET /api/v1/data (fremde Domain)" 401 \
     "$(status_code -H "X-User-Email: attacker@evil.example" "${BACKEND}/api/v1/data")"
-  check "POST /api/v1/process"          200 \
-    "$(status_code -X POST -H "Content-Type: application/json" -H "X-User-Email: ${DEMO_USER_EMAIL}" \
+  check "POST /api/v1/process"             200 \
+    "$(status_code -X POST -H "Content-Type: application/json" "${USER[@]}" \
           --data '{"values":[10,20,30,40]}' "${BACKEND}/api/v1/process")"
-  check "POST /api/v1/process (leer)"   400 \
-    "$(status_code -X POST -H "Content-Type: application/json" -H "X-User-Email: ${DEMO_USER_EMAIL}" \
+  check "POST /api/v1/process (leer)"      400 \
+    "$(status_code -X POST -H "Content-Type: application/json" "${USER[@]}" \
           --data '{"values":[]}' "${BACKEND}/api/v1/process")"
-  check "GET /does-not-exist (mit Auth)" 404 \
-    "$(status_code -H "X-User-Email: ${DEMO_USER_EMAIL}" "${BACKEND}/does-not-exist")"
+  check "GET /does-not-exist (mit Auth)"   404 "$(status_code "${USER[@]}" "${BACKEND}/does-not-exist")"
+
+  # --- RBAC-Matrix --------------------------------------------------------
+  check "operator (Rolle User)"            403 "$(status_code "${USER[@]}" "${BACKEND}/api/v1/protected/operator")"
+  check "operator (Rolle Operator)"        200 "$(status_code "${OPERATOR[@]}" "${BACKEND}/api/v1/protected/operator")"
+  check "operator (Rolle Admin)"           200 "$(status_code "${ADMIN[@]}" "${BACKEND}/api/v1/protected/operator")"
+  check "operator (mehrere Rollen)"        200 "$(status_code "${MULTI[@]}" "${BACKEND}/api/v1/protected/operator")"
+  check "admin/reset (Rolle User)"         403 "$(status_code -X POST "${USER[@]}" "${BACKEND}/api/v1/protected/admin/reset")"
+  check "admin/reset (Rolle Operator)"     403 "$(status_code -X POST "${OPERATOR[@]}" "${BACKEND}/api/v1/protected/admin/reset")"
+  check "admin/reset (Rolle Admin)"        200 "$(status_code -X POST "${ADMIN[@]}" "${BACKEND}/api/v1/protected/admin/reset")"
 fi
 
 # --- Worker und Frontend --------------------------------------------------
-check "GET worker /healthz"              200 "$(status_code "${WORKER}/healthz")"
-check "GET worker /docs"                 200 "$(status_code "${WORKER}/docs")"
-check "GET frontend /"                   200 "$(status_code "${FRONTEND}/")"
-check "GET frontend /healthz"            200 "$(status_code "${FRONTEND}/healthz")"
-check "GET frontend /api/v1/status"      200 "$(status_code "${FRONTEND}/api/v1/status")"
+check "GET worker /healthz"                200 "$(status_code "${WORKER}/healthz")"
+check "GET worker /docs"                   200 "$(status_code "${WORKER}/docs")"
+check "GET frontend /"                     200 "$(status_code "${FRONTEND}/")"
+check "GET frontend /healthz"              200 "$(status_code "${FRONTEND}/healthz")"
+check "GET frontend /api/v1/status"        200 "$(status_code "${FRONTEND}/api/v1/status")"
 
 echo
 echo "Ergebnis: ${PASSED} ok, ${SKIPPED} uebersprungen, ${FAILED} fehlgeschlagen"

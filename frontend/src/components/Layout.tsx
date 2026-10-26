@@ -6,6 +6,7 @@ interface LayoutProps {
   statusTone: BadgeTone;
   statusLabel: string;
   version: string;
+  roles: string[];
   children: ReactNode;
 }
 
@@ -15,7 +16,7 @@ const NAV_ITEMS: ReadonlyArray<{ label: string; href: string }> = [
   { label: "Verarbeitung", href: "#verarbeitung" },
 ];
 
-export function Layout({ statusTone, statusLabel, version, children }: LayoutProps) {
+export function Layout({ statusTone, statusLabel, version, roles, children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
@@ -30,7 +31,7 @@ export function Layout({ statusTone, statusLabel, version, children }: LayoutPro
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <nav className="hidden gap-4 text-sm text-slate-600 sm:flex">
               {NAV_ITEMS.map((item) => (
                 <a key={item.href} href={item.href} className="hover:text-slate-900">
@@ -38,6 +39,19 @@ export function Layout({ statusTone, statusLabel, version, children }: LayoutPro
                 </a>
               ))}
             </nav>
+
+            <div className="flex items-center gap-1.5" aria-label="Aktive Rollen">
+              {roles.length === 0 ? (
+                <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">keine Rolle</span>
+              ) : (
+                roles.map((role) => (
+                  <span key={role} className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
+                    {role}
+                  </span>
+                ))
+              )}
+            </div>
+
             <StatusBadge tone={statusTone} label={statusLabel} />
           </div>
         </div>
@@ -47,14 +61,14 @@ export function Layout({ statusTone, statusLabel, version, children }: LayoutPro
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">Systemübersicht</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Status des Go-Backends, Beispieldaten aus PostgreSQL und Ausführung eines Python-Worker-Jobs.
+            Status des Go-Backends, RBAC-Demo, Beispieldaten aus PostgreSQL und Ausführung eines Python-Worker-Jobs.
           </p>
         </div>
         {children}
       </main>
 
       <footer className="mx-auto max-w-6xl px-6 pb-8 text-xs text-slate-500">
-        Anchor Blueprint · Backend Go · Worker Python/FastAPI · DB PostgreSQL 16
+        Anchor Blueprint · Backend Go (JWT/RBAC) · Worker Python/FastAPI · DB PostgreSQL 16 (golang-migrate)
       </footer>
     </div>
   );

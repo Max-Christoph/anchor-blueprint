@@ -1,6 +1,9 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 PYTHON ?= python3
+# Testdatenbank fuer den golang-migrate-Integrationstest (wird uebersprungen,
+# wenn nicht erreichbar). Zeigt per Default auf den Compose-Postgres.
+TEST_DATABASE_URL ?= postgres://anchor:change-me-in-development@127.0.0.1:5432/anchor?sslmode=disable
 WORKER_VENV := worker/.venv
 
 .DEFAULT_GOAL := help
@@ -37,8 +40,8 @@ smoke: ## HTTP-Smoke-Test gegen den laufenden Stack
 test: test-backend test-frontend test-worker ## Alle Tests lokal (Go, Frontend, Worker)
 	@echo "Alle Tests erfolgreich."
 
-test-backend: ## go vet + go test -race
-	cd backend && go vet ./... && go test -race ./...
+test-backend: ## go vet + go test -race (inkl. RBAC- und Migrations-Tests)
+	cd backend && go vet ./... && TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race ./...
 
 test-frontend: ## npm ci + tsc + vite build
 	cd frontend && npm ci --no-audit --no-fund && npx tsc --noEmit && npm run build

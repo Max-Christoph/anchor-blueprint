@@ -192,6 +192,89 @@ func (h *Handler) Process(w http.ResponseWriter, r *http.Request) {
 	respondJSON(h.logger, w, http.StatusOK, processResponse{Result: result, RequestedBy: subject})
 }
 
+// Rollen, die das Template verdrahtet.
+const (
+	roleAdmin    = "Admin"
+	roleOperator = "Operator"
+)
+
+type meResponse struct {
+	Subject    string   `json:"subject"`
+	Email      string   `json:"email"`
+	Roles      []string `json:"roles"`
+	Groups     []string `json:"groups"`
+	AuthMethod string   `json:"auth_method"`
+}
+
+// Me liefert die eigene Identitaet (jede authentifizierte Identitaet).
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+	identity, ok := httpx.IdentityFrom(r.Context())
+	if !ok {
+		respondError(h.logger, w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid credentials")
+		return
+	}
+
+	respondJSON(h.logger, w, http.StatusOK, meResponse{
+		Subject:    identity.Subject,
+		Email:      identity.Email,
+		Roles:      identity.Roles,
+		Groups:     identity.Groups,
+		AuthMethod: identity.Method,
+	})
+}
+
+type operatorResponse struct {
+	Message       string   `json:"message"`
+	Subject       string   `json:"subject"`
+	Roles         []string `json:"roles"`
+	RequiredRoles []string `json:"required_roles"`
+}
+
+// OperatorAction ist ein RBAC-Testendpunkt: Admin ODER Operator.
+func (h *Handler) OperatorAction(w http.ResponseWriter, r *http.Request) {
+	identity, _ := httpx.IdentityFrom(r.Context())
+
+	h.logger.Info("rbac endpoint reached",
+		"endpoint", "operator",
+		"user", identity.Subject,
+		"roles", identity.Roles,
+		"request_id", httpx.RequestIDFrom(r.Context()),
+	)
+
+	respondJSON(h.logger, w, http.StatusOK, operatorResponse{
+		Message:       "operator action executed",
+		Subject:       identity.Subject,
+		Roles:         identity.Roles,
+		RequiredRoles: []string{roleAdmin, roleOperator},
+	})
+}
+
+type resetResponse struct {
+	Message     string    `json:"message"`
+	Reset       bool      `json:"reset"`
+	PerformedBy string    `json:"performed_by"`
+	PerformedAt time.Time `json:"performed_at"`
+}
+
+// AdminReset ist ein RBAC-Testendpunkt: ausschliesslich Admin.
+// Die Aktion ist bewusst ein Dry-Run (kein Zustandswechsel).
+func (h *Handler) AdminReset(w http.ResponseWriter, r *http.Request) {
+	identity, _ := httpx.IdentityFrom(r.Context())
+
+	h.logger.Warn("admin reset invoked",
+		"endpoint", "admin_reset",
+		"user", identity.Subject,
+		"request_id", httpx.RequestIDFrom(r.Context()),
+	)
+
+	respondJSON(h.logger, w, http.StatusOK, resetResponse{
+		Message:     "admin reset accepted (dry run)",
+		Reset:       true,
+		PerformedBy: identity.Subject,
+		PerformedAt: time.Now().UTC(),
+	})
+}
+
 // NotFound ist der Deny-by-Default-Fallback: unbekannte Pfade liefern 404,
 // ohne interne Strukturen zu offenbaren.
 func (h *Handler) NotFound(w http.ResponseWriter, r *http.Request) {

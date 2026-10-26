@@ -39,6 +39,7 @@ func Middleware(cfg MiddlewareConfig, logger *slog.Logger) func(http.Handler) ht
 			credentials := Credentials{
 				BearerToken: bearerToken(r),
 				UserEmail:   r.Header.Get("X-User-Email"),
+				UserRoles:   r.Header.Get("X-User-Roles"),
 			}
 
 			identity, err := cfg.Verifier.Verify(r.Context(), credentials)
@@ -60,11 +61,7 @@ func Middleware(cfg MiddlewareConfig, logger *slog.Logger) func(http.Handler) ht
 					"request_id", httpx.RequestIDFrom(r.Context()),
 				)
 
-				w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
-				w.Header().Set("Content-Type", "application/json; charset=utf-8")
-				w.Header().Set("Cache-Control", "no-store")
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","message":"` + message + `"}}`))
+				writeError(w, status, code, message)
 				return
 			}
 
@@ -84,4 +81,15 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+// writeError schreibt den einheitlichen Fehler-Envelope.
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","message":"` + message + `"}}`))
 }

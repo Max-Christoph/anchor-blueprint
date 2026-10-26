@@ -16,6 +16,7 @@ import (
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/auth"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/config"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/middleware"
+	migrationsrunner "github.com/Max-Christoph/anchor-blueprint/backend/internal/migrate"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/store"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/worker"
 )
@@ -65,6 +66,18 @@ func run() error {
 		return fmt.Errorf("connect database: %w", err)
 	}
 	defer st.Close()
+
+	if cfg.DBAutoMigrate {
+		migrateCtx, cancelMigrate := context.WithTimeout(ctx, 60*time.Second)
+		version, err := migrationsrunner.Run(migrateCtx, cfg.DatabaseURL)
+		cancelMigrate()
+		if err != nil {
+			return fmt.Errorf("database migrations: %w", err)
+		}
+		logger.Info("database migrations applied", "schema_version", version)
+	} else {
+		logger.Warn("DB_AUTO_MIGRATE=false - schema migrations are not applied at startup")
+	}
 
 	workerClient := worker.New(cfg.WorkerURL, cfg.WorkerTimeout)
 	handler := api.NewHandler(cfg, st, workerClient, logger)
@@ -129,17 +142,21 @@ func buildVerifier(cfg config.Config) (auth.Verifier, error) {
 	switch cfg.AuthMode {
 	case auth.ModeJWT:
 		return auth.NewJWTVerifier(auth.JWKSConfig{
-			Issuer:      cfg.OIDCIssuer,
-			Audience:    cfg.OIDCAudience,
-			JWKSURL:     cfg.OIDCJWKSURL,
-			CacheTTL:    cfg.OIDCJWKSCacheTTL,
-			HTTPTimeout: cfg.OIDCHTTPTimeout,
-			Leeway:      cfg.AuthClockLeeway,
+			Issuer:       cfg.OIDCIssuer,
+			Audience:     cfg.OIDCAudience,
+			JWKSURL:      cfg.OIDCJWKSURL,
+			CacheTTL:     cfg.OIDCJWKSCacheTTL,
+			HTTPTimeout:  cfg.OIDCHTTPTimeout,
+			Leeway:       cfg.AuthClockLeeway,
+			RolesClaim:   cfg.AuthRolesClaim,
+			GroupsClaim:  cfg.AuthGroupsClaim,
+			GroupRoleMap: cfg.AuthGroupRoleMap,
 		})
 	case auth.ModeDevHeader, auth.ModeMock:
 		return auth.NewDevHeaderVerifier(auth.DevHeaderConfig{
 			AllowedEmailDomains: cfg.AllowedEmailDomains,
 			StaticToken:         cfg.AuthBearerToken,
+			DefaultRole:         cfg.AuthDevDefaultRole,
 			ModeName:            cfg.AuthMode,
 		})
 	default:

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -22,11 +23,55 @@ type Identity struct {
 	Subject string
 	// Email ist die E-Mail-Adresse aus dem Token (falls vorhanden).
 	Email string
-	// Roles und Groups stammen aus den gleichnamigen Claims.
-	Roles  []string
+	// Roles sind App-Rollen (JWT "roles" oder Dev-Header X-User-Roles).
+	Roles []string
+	// Groups sind Gruppenzugehoerigkeiten (JWT "groups", z. B. Entra-Objekt-IDs).
 	Groups []string
 	// Method dokumentiert den Authentifizierungsweg (jwt, dev_header, dev_token).
 	Method string
+}
+
+// HasRole prueft eine Rolle ohne Beachtung der Gross-/Kleinschreibung.
+func (i Identity) HasRole(role string) bool {
+	target := strings.TrimSpace(strings.ToLower(role))
+	for _, candidate := range i.Roles {
+		if strings.ToLower(strings.TrimSpace(candidate)) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAnyRole prueft, ob mindestens eine der Rollen vorhanden ist.
+func (i Identity) HasAnyRole(roles ...string) bool {
+	for _, role := range roles {
+		if i.HasRole(role) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasGroup prueft eine Gruppe ohne Beachtung der Gross-/Kleinschreibung
+// (Entra-Gruppen sind GUIDs, Schreibweise kann variieren).
+func (i Identity) HasGroup(group string) bool {
+	target := strings.TrimSpace(strings.ToLower(group))
+	for _, candidate := range i.Groups {
+		if strings.ToLower(strings.TrimSpace(candidate)) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAnyGroup prueft, ob mindestens eine der Gruppen vorhanden ist.
+func (i Identity) HasAnyGroup(groups ...string) bool {
+	for _, group := range groups {
+		if i.HasGroup(group) {
+			return true
+		}
+	}
+	return false
 }
 
 // WithRequestID legt die Request-ID im Context ab.

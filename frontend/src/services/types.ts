@@ -15,6 +15,7 @@ export interface DatabaseStatus {
 
 export interface StatusResponse {
   service: string;
+  auth_mode: string;
   version: string;
   environment: string;
   uptime_seconds: number;
@@ -54,6 +55,31 @@ export interface CalcResult {
 export interface ProcessResponse {
   result: CalcResult;
   requested_by: string;
+}
+
+/** GET /api/v1/me */
+export interface MeResponse {
+  subject: string;
+  email: string;
+  roles: string[];
+  groups: string[];
+  auth_method: string;
+}
+
+/** GET /api/v1/protected/operator */
+export interface OperatorResponse {
+  message: string;
+  subject: string;
+  roles: string[];
+  required_roles: string[];
+}
+
+/** POST /api/v1/protected/admin/reset */
+export interface ResetResponse {
+  message: string;
+  reset: boolean;
+  performed_by: string;
+  performed_at: string;
 }
 
 export interface ApiErrorBody {

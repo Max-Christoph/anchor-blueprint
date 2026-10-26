@@ -21,23 +21,23 @@ type JWKSConfig struct {
 	CacheTTL    time.Duration
 	HTTPTimeout time.Duration
 	Leeway      time.Duration
-}
 
-// Claims sind die aus dem Token gelesenen Felder.
-type Claims struct {
-	jwt.RegisteredClaims
-	Email             string   `json:"email"`
-	PreferredUsername string   `json:"preferred_username"`
-	Roles             []string `json:"roles"`
-	Groups            []string `json:"groups"`
+	// RolesClaim benennt den Rollen-Claim (Default "roles").
+	RolesClaim string
+	// GroupsClaim benennt den Gruppen-Claim (Default "groups").
+	GroupsClaim string
+	// GroupRoleMap ordnet Gruppen-IDs zusaetzliche Rollen zu
+	// (z. B. Entra-Objekt-ID -> "Admin").
+	GroupRoleMap map[string][]string
 }
 
 // JWTVerifier validiert Bearer-Tokens (RS256) gegen ein JWKS.
 type JWTVerifier struct {
-	keys     *keyCache
-	parser   *jwt.Parser
-	issuer   string
-	audience string
+	keys        *keyCache
+	parser      *jwt.Parser
+	rolesClaim  string
+	groupsClaim string
+	groupRoles  map[string][]string
 }
 
 // NewJWTVerifier erzeugt den Verifier und validiert die Konfiguration.
@@ -56,7 +56,6 @@ func NewJWTVerifier(cfg JWKSConfig) (*JWTVerifier, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
 
 	parser := jwt.NewParser(
 		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
@@ -67,18 +66,33 @@ func NewJWTVerifier(cfg JWKSConfig) (*JWTVerifier, error) {
 		jwt.WithLeeway(cfg.Leeway),
 	)
 
+	rolesClaim := cfg.RolesClaim
+	if rolesClaim == "" {
+		rolesClaim = "roles"
+	}
+	groupsClaim := cfg.GroupsClaim
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+
+	groupRoles := make(map[string][]string, len(cfg.GroupRoleMap))
+	for group, roles := range cfg.GroupRoleMap {
+		groupRoles[strings.ToLower(strings.TrimSpace(group))] = roles
+	}
+
 	return &JWTVerifier{
-		keys:     newKeyCache(cfg.JWKSURL, cfg.CacheTTL, client),
-		parser:   parser,
-		issuer:   cfg.Issuer,
-		audience: cfg.Audience,
+		keys:        newKeyCache(cfg.JWKSURL, cfg.CacheTTL, &http.Client{Timeout: timeout}),
+		parser:      parser,
+		rolesClaim:  rolesClaim,
+		groupsClaim: groupsClaim,
+		groupRoles:  groupRoles,
 	}, nil
 }
 
 // Mode implementiert Verifier.
 func (v *JWTVerifier) Mode() string { return ModeJWT }
 
-// Verify prueft das Bearer-Token und liefert die Identitaet.
+// Verify prueft das Bearer-Token und mappt Claims in die Identitaet.
 // Der Dev-Header wird im JWT-Modus bewusst ignoriert.
 func (v *JWTVerifier) Verify(ctx context.Context, credentials Credentials) (httpx.Identity, error) {
 	raw := strings.TrimSpace(credentials.BearerToken)
@@ -86,7 +100,7 @@ func (v *JWTVerifier) Verify(ctx context.Context, credentials Credentials) (http
 		return httpx.Identity{}, ErrNoCredentials
 	}
 
-	claims := &Claims{}
+	claims := jwt.MapClaims{}
 	var keyErr error
 
 	keyfunc := func(token *jwt.Token) (any, error) {
@@ -112,35 +126,45 @@ func (v *JWTVerifier) Verify(ctx context.Context, credentials Credentials) (http
 	if !token.Valid {
 		return httpx.Identity{}, ErrInvalidToken
 	}
-	if strings.TrimSpace(claims.Subject) == "" {
+
+	subject, err := claims.GetSubject()
+	if err != nil || strings.TrimSpace(subject) == "" {
 		return httpx.Identity{}, fmt.Errorf("%w: missing sub claim", ErrInvalidToken)
 	}
 
-	email := claims.Email
+	groups := toStringList(claims[v.groupsClaim])
+	roles := toStringList(claims[v.rolesClaim])
+	for _, group := range groups {
+		roles = append(roles, v.groupRoles[strings.ToLower(strings.TrimSpace(group))]...)
+	}
+
+	email := stringClaim(claims, "email")
 	if email == "" {
-		email = claims.PreferredUsername
+		email = stringClaim(claims, "preferred_username")
 	}
 
 	return httpx.Identity{
-		Subject: claims.Subject,
+		Subject: subject,
 		Email:   email,
-		Roles:   claims.Roles,
-		Groups:  claims.Groups,
+		Roles:   SplitList(strings.Join(roles, ",")),
+		Groups:  groups,
 		Method:  ModeJWT,
 	}, nil
 }
 
+// stringClaim liest einen String-Claim defensiv.
+func stringClaim(claims jwt.MapClaims, key string) string {
+	value, ok := claims[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
 // classifyJWTError uebersetzt jwt-Fehler in die Paket-Fehlerklassen.
 func classifyJWTError(err error) error {
-	switch {
-	case errors.Is(err, jwt.ErrTokenExpired):
+	if errors.Is(err, jwt.ErrTokenExpired) {
 		return fmt.Errorf("%w: %w", ErrTokenExpired, err)
-	case errors.Is(err, jwt.ErrTokenUnverifiable):
-		if errors.Is(err, ErrKeyUnavailable) {
-			return err
-		}
-		return fmt.Errorf("%w: %w", ErrInvalidToken, err)
-	default:
-		return fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
+	return fmt.Errorf("%w: %w", ErrInvalidToken, err)
 }

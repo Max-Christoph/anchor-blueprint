@@ -26,14 +26,22 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	LogLevel        slog.Level
 
-	DatabaseURL string
-	DBMaxConns  int32
+	DatabaseURL   string
+	DBMaxConns    int32
+	DBAutoMigrate bool
 
 	WorkerURL     string
 	WorkerTimeout time.Duration
 
 	// AuthMode ist jwt (Standard), dev_header oder mock.
 	AuthMode string
+	// AuthRolesClaim / AuthGroupsClaim benennen die Claims fuer RBAC.
+	AuthRolesClaim  string
+	AuthGroupsClaim string
+	// AuthGroupRoleMap mappt Gruppen-IDs auf zusaetzliche Rollen.
+	AuthGroupRoleMap map[string][]string
+	// AuthDevDefaultRole greift, wenn im Dev-Modus X-User-Roles fehlt.
+	AuthDevDefaultRole string
 	// OIDC-Parameter (nur AUTH_MODE=jwt).
 	OIDCIssuer       string
 	OIDCAudience     string
@@ -62,6 +70,11 @@ func Load() (Config, error) {
 		DatabaseURL:         getString("DATABASE_URL", ""),
 		WorkerURL:           strings.TrimRight(getString("WORKER_URL", "http://worker:8000"), "/"),
 		AuthMode:            mode,
+		AuthRolesClaim:      getString("AUTH_ROLES_CLAIM", "roles"),
+		AuthGroupsClaim:     getString("AUTH_GROUPS_CLAIM", "groups"),
+		AuthGroupRoleMap:    getGroupRoleMap("OIDC_GROUP_ROLE_MAP"),
+		AuthDevDefaultRole:  getString("AUTH_DEV_DEFAULT_ROLE", "User"),
+		DBAutoMigrate:       getBool("DB_AUTO_MIGRATE", true),
 		OIDCIssuer:          getString("OIDC_ISSUER", ""),
 		OIDCAudience:        getString("OIDC_AUDIENCE", ""),
 		OIDCJWKSURL:         getString("OIDC_JWKS_URL", ""),
@@ -138,6 +151,43 @@ func validateAuth(cfg Config) error {
 		return fmt.Errorf("AUTH_MODE=%s requires AUTH_ALLOWED_EMAIL_DOMAINS", cfg.AuthMode)
 	}
 	return nil
+}
+
+func getBool(key string, fallback bool) bool {
+	raw := strings.ToLower(getString(key, ""))
+	switch raw {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// getGroupRoleMap parst "groupA=Admin;groupB=Operator,Viewer".
+func getGroupRoleMap(key string) map[string][]string {
+	raw := getString(key, "")
+	if raw == "" {
+		return nil
+	}
+	mapping := make(map[string][]string)
+	for _, pair := range strings.Split(raw, ";") {
+		group, roles, found := strings.Cut(pair, "=")
+		group = strings.TrimSpace(group)
+		if !found || group == "" {
+			continue
+		}
+		parsed := auth.SplitList(roles)
+		if len(parsed) == 0 {
+			continue
+		}
+		mapping[group] = parsed
+	}
+	if len(mapping) == 0 {
+		return nil
+	}
+	return mapping
 }
 
 func getString(key, fallback string) string {

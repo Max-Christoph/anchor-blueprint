@@ -133,6 +133,8 @@ type tokenOptions struct {
 	expiresIn         time.Duration
 	method            jwt.SigningMethod
 	key               *rsa.PrivateKey
+	rolesClaim        string
+	groupsClaim       string
 }
 
 func signToken(t *testing.T, options tokenOptions) string {
@@ -147,33 +149,49 @@ func signToken(t *testing.T, options tokenOptions) string {
 	if options.audience == "" {
 		options.audience = testAudience
 	}
-	switch options.subject {
-	case "-":
-		options.subject = ""
-	case "":
-		options.subject = testSub
-	}
 	if options.expiresIn == 0 {
 		options.expiresIn = 5 * time.Minute
 	}
-
 	if options.key == nil {
 		options.key, _ = testKeys(t)
 	}
+
 	now := time.Now()
-	claims := auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    options.issuer,
-			Audience:  jwt.ClaimStrings{options.audience},
-			Subject:   options.subject,
-			ExpiresAt: jwt.NewNumericDate(now.Add(options.expiresIn)),
-			IssuedAt:  jwt.NewNumericDate(now.Add(-time.Minute)),
-			ID:        "test-jti",
-		},
-		Email:             options.email,
-		PreferredUsername: options.preferredUsername,
-		Roles:             options.roles,
-		Groups:            options.groups,
+	claims := jwt.MapClaims{
+		"iss": options.issuer,
+		"aud": options.audience,
+		"iat": now.Add(-time.Minute).Unix(),
+		"exp": now.Add(options.expiresIn).Unix(),
+		"jti": "test-jti",
+	}
+
+	switch options.subject {
+	case "-": // kein sub-Claim
+	case "":
+		claims["sub"] = testSub
+	default:
+		claims["sub"] = options.subject
+	}
+
+	if options.email != "" {
+		claims["email"] = options.email
+	}
+	if options.preferredUsername != "" {
+		claims["preferred_username"] = options.preferredUsername
+	}
+	if options.roles != nil {
+		claim := options.rolesClaim
+		if claim == "" {
+			claim = "roles"
+		}
+		claims[claim] = options.roles
+	}
+	if options.groups != nil {
+		claim := options.groupsClaim
+		if claim == "" {
+			claim = "groups"
+		}
+		claims[claim] = options.groups
 	}
 
 	token := jwt.NewWithClaims(options.method, claims)
@@ -266,66 +284,108 @@ func TestJWTVerifierEmailFallsBackToPreferredUsername(t *testing.T) {
 	}
 }
 
+func TestJWTVerifierMapsCustomClaimsAndGroups(t *testing.T) {
+	signingKey, _ := testKeys(t)
+	server := newJWKSServer(t)
+	server.addKey(testKID, &signingKey.PublicKey)
+
+	verifier, err := auth.NewJWTVerifier(auth.JWKSConfig{
+		Issuer:       testIssuer,
+		Audience:     testAudience,
+		JWKSURL:      server.url(),
+		HTTPTimeout:  2 * time.Second,
+		RolesClaim:   "app_roles",
+		GroupsClaim:  "group_ids",
+		GroupRoleMap: map[string][]string{"0000-group-admin": {"Admin"}},
+	})
+	if err != nil {
+		t.Fatalf("NewJWTVerifier: %v", err)
+	}
+
+	token := signToken(t, tokenOptions{
+		kid:         testKID,
+		key:         signingKey,
+		roles:       []string{"Operator"},
+		rolesClaim:  "app_roles",
+		groups:      []string{"0000-group-admin"},
+		groupsClaim: "group_ids",
+	})
+
+	identity, err := verifier.Verify(context.Background(), auth.Credentials{BearerToken: token})
+	if err != nil {
+		t.Fatalf("Token wurde abgelehnt: %v", err)
+	}
+	if !identity.HasRole("Operator") {
+		t.Errorf("Rolle Operator fehlt: %v", identity.Roles)
+	}
+	if !identity.HasRole("Admin") {
+		t.Errorf("Gruppen-Mapping auf Admin fehlt: %v", identity.Roles)
+	}
+	if !identity.HasGroup("0000-group-admin") {
+		t.Errorf("Gruppe fehlt: %v", identity.Groups)
+	}
+}
+
 func TestJWTVerifierRejects(t *testing.T) {
 	signingKey, foreignKey := testKeys(t)
 
 	tests := []struct {
 		name     string
-		token    func(t *testing.T, server *jwksServer) string
+		token    func(t *testing.T) string
 		expected error
 	}{
 		{
 			name: "abgelaufenes Token",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{kid: testKID, key: signingKey, expiresIn: -5 * time.Minute})
 			},
 			expected: auth.ErrTokenExpired,
 		},
 		{
 			name: "falscher Issuer",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{issuer: "https://evil.example.com", kid: testKID, key: signingKey})
 			},
 			expected: auth.ErrInvalidToken,
 		},
 		{
 			name: "falsche Audience",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{audience: "api://other-service", kid: testKID, key: signingKey})
 			},
 			expected: auth.ErrInvalidToken,
 		},
 		{
 			name: "manipulierte Signatur",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{kid: testKID, key: foreignKey})
 			},
 			expected: auth.ErrInvalidToken,
 		},
 		{
 			name: "unbekanntes kid",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{kid: "unknown-kid", key: signingKey})
 			},
 			expected: auth.ErrInvalidToken,
 		},
 		{
 			name: "Algorithmus-Verwechslung (HS256)",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{kid: testKID, method: jwt.SigningMethodHS256, key: signingKey})
 			},
 			expected: auth.ErrInvalidToken,
 		},
 		{
 			name: "fehlendes sub-Claim",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{subject: "-", kid: testKID, key: signingKey})
 			},
 			expected: auth.ErrInvalidToken,
 		},
 		{
 			name: "manipulierter Token-String",
-			token: func(t *testing.T, _ *jwksServer) string {
+			token: func(t *testing.T) string {
 				return signToken(t, tokenOptions{kid: testKID, key: signingKey}) + "x"
 			},
 			expected: auth.ErrInvalidToken,
@@ -338,7 +398,7 @@ func TestJWTVerifierRejects(t *testing.T) {
 			server.addKey(testKID, &signingKey.PublicKey)
 			verifier := newVerifier(t, server, time.Minute)
 
-			_, err := verifier.Verify(context.Background(), auth.Credentials{BearerToken: testCase.token(t, server)})
+			_, err := verifier.Verify(context.Background(), auth.Credentials{BearerToken: testCase.token(t)})
 			if err == nil {
 				t.Fatalf("Token wurde akzeptiert, erwartet wurde ein Fehler")
 			}
@@ -355,7 +415,10 @@ func TestJWTVerifierRequiresBearerToken(t *testing.T) {
 	server.addKey(testKID, &signingKey.PublicKey)
 	verifier := newVerifier(t, server, time.Minute)
 
-	_, err := verifier.Verify(context.Background(), auth.Credentials{UserEmail: testEmail})
+	_, err := verifier.Verify(context.Background(), auth.Credentials{
+		UserEmail: testEmail,
+		UserRoles: "Admin",
+	})
 	if !errors.Is(err, auth.ErrNoCredentials) {
 		t.Fatalf("Fehler = %v, erwartet ErrNoCredentials (Dev-Header darf im JWT-Modus nicht greifen)", err)
 	}
@@ -391,7 +454,6 @@ func TestJWTVerifierReloadsOnKeyRotation(t *testing.T) {
 		t.Fatalf("erster Verify: %v", err)
 	}
 
-	// Neue Schluessel-ID im JWKS (Rotation): unbekanntes kid loest Refresh aus.
 	server.addKey("rotated-key-2", &rotatedKey.PublicKey)
 	if _, err := verifier.Verify(context.Background(), auth.Credentials{
 		BearerToken: signToken(t, tokenOptions{kid: "rotated-key-2", key: rotatedKey}),

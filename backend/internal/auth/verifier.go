@@ -1,6 +1,6 @@
 // Package auth enthaelt die Authentifizierung des Backends: JWT-Validierung
-// gegen JWKS (RS256), einen Dev-Header-Modus fuer lokale Tests und die
-// HTTP-Middleware mit Deny-by-Default.
+// gegen JWKS (RS256), einen Dev-Header-Modus fuer lokale Tests, RBAC-Middleware
+// und die Auth-Middleware mit Deny-by-Default.
 package auth
 
 import (
@@ -31,6 +31,8 @@ type Credentials struct {
 	BearerToken string
 	// UserEmail stammt aus dem Dev-Header "X-User-Email".
 	UserEmail string
+	// UserRoles stammt aus dem Dev-Header "X-User-Roles" (CSV).
+	UserRoles string
 }
 
 // Verifier prueft Zugangsdaten und liefert die Identitaet.
@@ -39,6 +41,13 @@ type Verifier interface {
 	// Mode benennt das Verfahren fuer Logs und /api/v1/status.
 	Mode() string
 }
+
+// Unterstuetzte Betriebsarten.
+const (
+	ModeJWT       = "jwt"
+	ModeDevHeader = "dev_header"
+	ModeMock      = "mock"
+)
 
 // Mode normalisiert AUTH_MODE; unbekannte Werte werden abgelehnt.
 func Mode(raw string) (string, error) {
@@ -53,9 +62,44 @@ func Mode(raw string) (string, error) {
 	}
 }
 
-// Unterstuetzte Betriebsarten.
-const (
-	ModeJWT       = "jwt"
-	ModeDevHeader = "dev_header"
-	ModeMock      = "mock"
-)
+// SplitList zerlegt CSV-Werte in eine getrimmte, deduplizierte Liste.
+func SplitList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		clean := strings.TrimSpace(part)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, clean)
+	}
+	return values
+}
+
+// toStringList normalisiert Claim-Werte (string, []string, []any) zu []string.
+func toStringList(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return SplitList(typed)
+	case []string:
+		return SplitList(strings.Join(typed, ","))
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return SplitList(strings.Join(parts, ","))
+	default:
+		return nil
+	}
+}

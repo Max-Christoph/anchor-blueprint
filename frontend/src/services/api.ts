@@ -2,7 +2,10 @@ import type {
   ApiErrorBody,
   DataResponse,
   HealthResponse,
+  MeResponse,
+  OperatorResponse,
   ProcessResponse,
+  ResetResponse,
   StatusResponse,
 } from "./types";
 
@@ -14,6 +17,19 @@ const DEMO_USER_EMAIL: string = import.meta.env.VITE_DEMO_USER_EMAIL ?? "demo.us
 
 /** Optionaler Bearer-Token (Dev-Modus oder kurzlebiges Test-Token). */
 const BEARER_TOKEN: string = import.meta.env.VITE_BEARER_TOKEN ?? "";
+
+/** Aktive Rollen fuer den Dev-Modus (RBAC-Demonstration im Browser). */
+let activeRoles: string[] = [];
+
+/** Setzt die Rollen, die als X-User-Roles mitgesendet werden. */
+export function setActiveRoles(roles: string[]): void {
+  activeRoles = [...roles];
+}
+
+/** Liest die aktuell aktiven Rollen. */
+export function getActiveRoles(): string[] {
+  return [...activeRoles];
+}
 
 /** Typisierter Fehler der API-Schicht. */
 export class ApiError extends Error {
@@ -35,6 +51,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set("Authorization", `Bearer ${BEARER_TOKEN}`);
   } else {
     headers.set("X-User-Email", DEMO_USER_EMAIL);
+  }
+  if (activeRoles.length > 0) {
+    headers.set("X-User-Roles", activeRoles.join(","));
   }
   if (init.body !== undefined) {
     headers.set("Content-Type", "application/json");
@@ -66,6 +85,8 @@ export const api = {
 
   status: (): Promise<StatusResponse> => request<StatusResponse>("/api/v1/status"),
 
+  me: (): Promise<MeResponse> => request<MeResponse>("/api/v1/me"),
+
   data: (): Promise<DataResponse> => request<DataResponse>("/api/v1/data"),
 
   process: (values: number[]): Promise<ProcessResponse> =>
@@ -73,12 +94,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ values, operation: "summary" }),
     }),
+
+  operatorAction: (): Promise<OperatorResponse> => request<OperatorResponse>("/api/v1/protected/operator"),
+
+  adminReset: (): Promise<ResetResponse> =>
+    request<ResetResponse>("/api/v1/protected/admin/reset", { method: "POST" }),
 };
 
 /** Wandelt unbekannte Fehler in eine anzeigbare Meldung. */
 export function describeError(error: unknown): string {
   if (error instanceof ApiError) {
-    return `${error.code}: ${error.message}`;
+    return `${error.status} ${error.code}: ${error.message}`;
   }
   if (error instanceof Error) {
     return error.message;
