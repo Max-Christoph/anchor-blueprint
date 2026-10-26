@@ -8,6 +8,12 @@ export interface HealthResponse {
   version: string;
 }
 
+export interface ReadinessResponse {
+  status: "ready" | "not_ready";
+  checks: { database: HealthState; worker: HealthState };
+  version: string;
+}
+
 export interface DatabaseStatus {
   status: HealthState;
   latency_ms: number;

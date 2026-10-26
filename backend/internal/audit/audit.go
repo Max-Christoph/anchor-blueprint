@@ -40,7 +40,9 @@ type Recorder interface {
 const (
 	ActionRBACDeny   = "rbac.deny"
 	ActionAdminReset = "admin.reset"
-	ActionAuditRead  = "audit.read"
+	// ActionAuditRead wird nur im strukturierten App-Log (slog) verwendet,
+	// nicht in audit_logs - sonst fuellt sich die Tabelle durch Lesen selbst.
+	ActionAuditRead = "audit.read"
 )
 
 type contextKey string

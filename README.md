@@ -15,7 +15,80 @@ abgesichert durch eine GitHub-Actions-CI.
 
 ---
 
-## 1. Quickstart
+## 1. Neues Standort-Projekt anlegen (Fork in 4 Schritten)
+
+Das Template ist als Ausgangspunkt gedacht, nicht als geteiltes System: pro
+Standort/Projekt ein eigenes Repository.
+
+### Schritt 1 — Klonen und umbenennen
+
+```bash
+git clone https://github.com/Max-Christoph/anchor-blueprint werk-nord
+cd werk-nord
+./scripts/rename-project.sh werk-nord "Werk Nord"
+```
+
+Das Script ersetzt Compose-Projekt, Netz-/Volume-Namen, Go-Modulpfad, UI-Titel,
+`package.json`-Namen und Doku in einem Lauf und prüft den Slug
+(`^[a-z][a-z0-9-]{2,62}$`). Anschließend:
+
+```bash
+cd backend && go build ./... && cd ..
+cd frontend && npm ci && npm run build && cd ..
+```
+
+Nicht umbenannt werden Datenbankname/-user (`POSTGRES_DB`/`POSTGRES_USER`,
+Default `anchor`) — das ist Absicht, damit ein bestehendes Volume
+weiterfunktioniert; bei Bedarf in `.env` ändern und `docker compose down -v`.
+
+### Schritt 2 — Eigenes Schema in `migrations/`
+
+```bash
+cd backend/migrations
+touch 000003_add_sites.up.sql 000003_add_sites.down.sql
+```
+
+- Nur **DDL** (Tabellen, Indizes, Constraints) — keine Geschäftsdaten.
+- Fortlaufende Nummer, `down` nie vergessen (`make test` prüft die Paarung).
+- Beispieldaten/Stammdaten gehören in `internal/seed` bzw. ein eigenes Command.
+
+```bash
+cd ../.. && make test        # Migrationen + Rollback gegen Testdatenbank
+make up && make seed         # leerer Stack + Dev-Daten
+```
+
+### Schritt 3 — Endpunkte mit `RequireRole` schützen
+
+```go
+// backend/internal/api/router.go
+mux.Handle("GET /api/v1/sites",
+    auth.RequireRole("Admin", "Operator")(http.HandlerFunc(h.Sites)))
+mux.Handle("POST /api/v1/sites",
+    auth.RequireRole("Admin")(http.HandlerFunc(h.CreateSite)))
+```
+
+- Handler bleibt frei von Auth-Logik; Identität kommt über
+  `httpx.IdentityFrom(r.Context())`.
+- Rollen stammen aus dem JWT (`roles`, `groups` via `OIDC_GROUP_ROLE_MAP`) —
+  im Dev-Modus aus `X-User-Roles`.
+- 403-Abweisungen landen automatisch in `audit_logs`; sensitive Aktionen
+  zusätzlich über `h.recordAudit(...)`.
+
+### Schritt 4 — Frontend-Komponenten einhängen
+
+```tsx
+// frontend/src/App.tsx
+import { SiteTable } from "./components/SiteTable";
+
+<SiteTable onReload={() => void loadSites()} items={sites ?? []} />
+```
+
+- Typen nach `src/services/types.ts`, Aufrufe nach `src/services/api.ts`
+  (Fehler als `ApiError`, 403 gezielt behandeln).
+- Rollen-UI: `RoleSwitcher` nur im Dev-Modus, im JWT-Modus `RoleInfo`.
+- Danach `npm run build` (enthält `tsc --noEmit`) und Image neu bauen.
+
+## 2. Quickstart
 
 ```bash
 cp .env.example .env
@@ -25,7 +98,8 @@ docker compose up -d
 | Dienst | URL | Zweck |
 |---|---|---|
 | Frontend | http://localhost:3000 | Dashboard, RBAC-Demo, Daten, Worker-Job |
-| Backend | http://localhost:8080/healthz | Health-Check (Go) |
+| Backend | http://localhost:8080/livez | Liveness (Prozess laeuft) |
+| Backend | http://localhost:8080/readyz | Readiness (DB + Worker) |
 | Backend | http://localhost:8080/api/v1/status | Systemmetriken inkl. `auth_mode` |
 | Worker | http://localhost:8000/docs | OpenAPI-Doku (FastAPI) |
 | Datenbank | `localhost:5432` | PostgreSQL 16 |
@@ -57,7 +131,7 @@ make clean     # Stack + Volume entfernen (Datenverlust)
 
 ---
 
-## 2. Architektur
+## 3. Architektur
 
 ```
                 Browser (JWT oder Dev-Header + X-User-Roles)
@@ -86,7 +160,7 @@ make clean     # Stack + Volume entfernen (Datenverlust)
 
 ---
 
-## 3. Ordnerstruktur
+## 4. Ordnerstruktur
 
 ```
 anchor-blueprint/
@@ -129,7 +203,7 @@ anchor-blueprint/
 
 ---
 
-## 4. Authentifizierung
+## 5. Authentifizierung
 
 `AUTH_MODE` schaltet das Verfahren um. Standard im Code ist **`jwt`**.
 
@@ -161,14 +235,14 @@ nicht abrufbares JWKS → `503`.
 
 ### Grundregeln
 
-- **Deny-by-Default**: öffentlich sind nur `/healthz` und `/api/v1/status`;
+- **Deny-by-Default**: öffentlich sind nur `/livez`, `/readyz` und `/api/v1/status`;
   alles andere liefert ohne Identität `401` (auch unbekannte Pfade).
 - CORS nur für explizite Origins, CSP + Security-Header in `nginx.conf`,
   non-root-Container, `ReadHeaderTimeout`, Body-Limit 1 MiB.
 
 ---
 
-## 5. RBAC
+## 6. RBAC
 
 Rollen und Gruppen landen beim Authentifizieren in `httpx.Identity`:
 
@@ -218,7 +292,7 @@ Jede 403-Entscheidung der RBAC-Middleware und jede sensitive Aktion landet in
 | `id`, `timestamp` | Primärschlüssel, Zeitpunkt (Default `now()`) |
 | `request_id` | Request-ID aus dem Context (Korrelation mit Logs) |
 | `user_id` | `sub` bzw. `X-User-Email` |
-| `action` | `rbac.deny`, `admin.reset`, `audit.read` |
+| `action` | `rbac.deny`, `admin.reset` (`audit.read` steht **nur** im App-Log) |
 | `resource` | `METHOD /pfad` |
 | `status_code` | 403 bzw. 200 |
 | `details` (JSONB) | `required`, `granted_roles`, `granted_groups`, `auth_method`, … |
@@ -227,11 +301,14 @@ Der Schreibvorgang ist **direkt (synchron) mit 2 s Timeout**: bei so
 seltenen, sicherheitsrelevanten Ereignissen ist Nachvollziehbarkeit wichtiger
 als Latenz. Schreibfehler werden geloggt, kippen den Request aber nicht.
 Lesen lässt sich das Log über `GET /api/v1/protected/admin/audit-logs?limit=50`
-(nur `Admin`).
+(nur `Admin`). **Lesezugriffe werden nicht in `audit_logs` geschrieben** — sonst
+würde jedes Polling die Tabelle selbst füllen. Sie erscheinen ausschließlich als
+strukturiertes App-Log (`slog`: `audit log read` mit `user`, `limit`, `count`,
+`request_id`).
 
 ---
 
-## 6. Migrationen, Seed und Schema-Lifecycle
+## 7. Migrationen, Seed und Schema-Lifecycle
 
 ### Migrationen (nur DDL)
 
@@ -268,13 +345,14 @@ cd backend && TEST_DATABASE_URL="postgres://…" go test -run TestDown ./interna
 `migrate.Down()` rollt alle Migrationen zurück (Tests nutzen das, um „up →
 Schema da, down → Schema weg, up → wieder da" zu belegen).
 
-## 7. API-Verträge
+## 8. API-Verträge
 
 ### Backend (Go)
 
 | Methode | Pfad | Auth | Rollen | Beschreibung |
 |---|---|---|---|---|
-| GET | `/healthz` | – | – | DB-Ping; `503` wenn nicht erreichbar |
+| GET | `/livez` | – | – | Liveness: 200 solange der Prozess läuft (keine DB) |
+| GET | `/readyz` | – | – | Readiness: DB-Ping + Worker, sonst `503` |
 | GET | `/api/v1/status` | – | – | Uptime, Go-Version, Speicher, DB-Latenz, `auth_mode` |
 | GET | `/api/v1/me` | ✅ | – | eigene Identität (sub, email, roles, groups, auth_method) |
 | GET | `/api/v1/data` | ✅ | – | Beispiel-Datensätze |
@@ -293,13 +371,13 @@ Fehlerformat:
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
-| GET | `/healthz` | Liveness |
+| GET | `/healthz` | Liveness des Workers |
 | GET | `/docs` | OpenAPI-Doku |
 | POST | `/process/calc` | Aggregat: count, sum, mean, median, min, max, stddev, p90 |
 
 ---
 
-## 8. Frontend: Dev- und JWT-Modus getrennt
+## 9. Frontend: Dev- und JWT-Modus getrennt
 
 Das UI richtet sich nach `auth_mode` aus `GET /api/v1/status`:
 
@@ -312,7 +390,7 @@ Technisch sendet der API-Client `X-User-Roles` ausschließlich im Dev-Modus
 (`setRoleHeaderEnabled`), sodass im JWT-Modus kein irreführender Header
 mitgeht. Rollen-Badges im Header stammen aus `/api/v1/me`.
 
-## 9. Konfiguration
+## 10. Konfiguration
 
 | Variable | Default | Wirkung |
 |---|---|---|
@@ -328,6 +406,9 @@ mitgeht. Rollen-Badges im Header stammen aus `/api/v1/me`.
 | `AUTH_ALLOWED_EMAIL_DOMAINS` | `example.com` | erlaubte Header-Domains (Dev) |
 | `AUTH_BEARER_TOKEN` | `dev-bearer-token-change-me` | statischer Token (Dev) |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000,…` | erlaubte Browser-Origins |
+| `RATE_LIMIT_ENABLED` | `true` | Rate-Limit für 401/403-Fehlversuche |
+| `RATE_LIMIT_BURST` | `10` | erlaubte Fehlversuche pro Client-IP |
+| `RATE_LIMIT_PER_MINUTE` | `30` | Nachfüllrate des Fehlversuch-Budgets |
 | `WORKER_TIMEOUT` / `SHUTDOWN_TIMEOUT` | `10s` / `10s` | Timeouts |
 | `VITE_API_BASE_URL` | leer | leer = relative Pfade über Nginx |
 | `VITE_DEMO_USER_EMAIL` | `demo.user@example.com` | Header-Identität (Dev) |
@@ -337,7 +418,7 @@ Echte Secrets gehören in einen Secret-Store, nicht in `.env`.
 
 ---
 
-## 10. CI-Pipeline (`.github/workflows/ci.yml`)
+## 11. CI-Pipeline (`.github/workflows/ci.yml`)
 
 | Job | Schritte |
 |---|---|
@@ -350,7 +431,7 @@ Lokal dieselben Prüfungen: `make lint` und `make test`.
 
 ---
 
-## 11. Neuen Endpunkt hinzufügen
+## 12. Neuen Endpunkt hinzufügen
 
 ### Backend (Go)
 
@@ -380,7 +461,47 @@ Lokal dieselben Prüfungen: `make lint` und `make test`.
 
 ---
 
-## 12. Graceful Shutdown
+## 13. Betrieb: Liveness, Readiness, Rate-Limit
+
+### Liveness vs. Readiness
+
+| Endpunkt | Frage | Verhalten |
+|---|---|---|
+| `GET /livez` | Läuft der Prozess? | immer `200` (`{"status":"ok"}`, keine DB-Abfrage) |
+| `GET /readyz` | Kann Traffic angenommen werden? | `200` wenn DB-Pool **und** Worker erreichbar, sonst `503` mit `checks.database` / `checks.worker` |
+
+Konsequenzen:
+
+- Docker-Healthcheck des Backends läuft auf `/livez` — ein DB-Ausfall startet
+  den Container **nicht** neu (`depends_on` wartet weiter auf Readiness des
+  Vorgängers, nicht auf Liveness).
+- `/readyz` eignet sich unverändert für Kubernetes (`livenessProbe` →
+  `/livez`, `readinessProbe` → `/readyz`).
+- Beide Endpunkte sind öffentlich (kein Auth), liefern aber keine internen
+  Details außer `up`/`down` und der Version.
+
+```bash
+curl -fsS localhost:8080/livez
+curl -fsS localhost:8080/readyz   # 503, solange DB/Worker fehlen
+```
+
+### Rate-Limit für Fehlversuche
+
+`middleware.RateLimit` (Token-Bucket aus `golang.org/x/time/rate`) schützt vor
+unautorisiertem Hämmern und damit vor einer gefluteten Audit-Tabelle:
+
+- Budget pro Client-IP: `RATE_LIMIT_BURST` (Default 10), Nachfüllung
+  `RATE_LIMIT_PER_MINUTE` (Default 30).
+- **Nur** Antworten mit `401`/`403` verbrauchen ein Token — erfolgreicher
+  Traffic wird nie gedrosselt.
+- Erschöpftes Budget → sofort `429` mit `Retry-After`, ohne Auth-Prüfung und
+  ohne DB-/Audit-Schreibvorgang.
+- Client-IP aus `X-Real-IP` (Nginx) bzw. erstem `X-Forwarded-For`, sonst
+  `RemoteAddr`. Header sind nur hinter einem vertrauenswürdigen Proxy belastbar
+  — Backend nicht direkt exponieren.
+- Die Map wird ab 2048 Einträgen von veralteten Buckets (10 min idle) befreit.
+
+## 14. Graceful Shutdown
 
 `docker compose stop backend` → `SIGTERM`: keine neuen Requests, laufende
 Requests bis `SHUTDOWN_TIMEOUT`, dann Pool schließen. Im Log:
@@ -392,7 +513,7 @@ Requests bis `SHUTDOWN_TIMEOUT`, dann Pool schließen. Im Log:
 
 ---
 
-## 13. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | Ursache / Lösung |
 |---|---|
@@ -403,14 +524,30 @@ Requests bis `SHUTDOWN_TIMEOUT`, dann Pool schließen. Im Log:
 | `503 auth_backend_unavailable` | JWKS nicht erreichbar (`OIDC_JWKS_URL`). |
 | Änderungen an Migrationen wirken nicht | bereits angewendete Versionen laufen nicht erneut → neue Migration anlegen. |
 | Datenbank leer, keine Beispieldaten | Seed separat ausführen (`make seed` bzw. `DB_SEED_DEV_DATA=true`) — Migrationen liefern nur DDL. |
-| `audit_logs` bleibt leer | Audit wird nur bei 403 und bei `admin.reset`/`audit.read` geschrieben; Schreibfehler stehen als `audit write failed` im Backend-Log. |
+| `audit_logs` bleibt leer | In die Tabelle gehen nur `rbac.deny` (403) und `admin.reset`; Lesezugriffe stehen ausschließlich im App-Log. Schreibfehler: `audit write failed`. |
 | `502` auf `/api/v1/process` | Worker nicht erreichbar (`docker compose logs worker`). |
 
 ---
 
-## 14. Nächste Ausbaustufen
+## 16. Template-Freeze (v1.0.0-rc1) und bewusste Nicht-Ziele
 
-1. Policy-Engine statt fester Rollen-Matrix (OPA/Casbin) für feinere Scopes.
-2. Audit-Log persistieren (RBAC-Entscheidungen in eine Tabelle/Stream).
-3. `/metrics` (Prometheus) und Trace-IDs.
-4. Trivy zusätzlich als Image-Scan, Deployment-Pipeline mit signierten Images.
+Der Kern-Stack ist mit `v1.0.0-rc1` **eingefroren**: Go-Backend (OIDC/JWT, RBAC,
+Audit), Postgres mit DDL-Migrationen + separatem Seed, FastAPI-Worker,
+React-Frontend, Compose-Orchestrierung, CI. Änderungen am Kern nur noch als
+bewusste, dokumentierte Entscheidung — Erweiterungen gehören in das jeweilige
+Fork-Projekt.
+
+**Nicht im Template (bewusst):**
+
+| Nicht-Ziel | Begründung |
+|---|---|
+| Policy-Engine (OPA/Casbin) | Rollen-Matrix mit drei Rollen; externe Engine kostet Betrieb und Lernkurve ohne Nutzen |
+| Partitionierung von `audit_logs` | bei 10–600 Nutzern wenige MB/Jahr; deklarative Partitionen sind Overkill |
+| Backup-/Restore-Pipeline in der CI | Datenbank-Backup gehört in die Plattform (Volume-Snapshots), nicht in die App-CI |
+| Service-Mesh, Message-Broker, Multi-Region | ein interner Standort-Stack, keine verteilte Plattform |
+| Frontend-Framework-Wechsel, State-Management-Bibliothek | React + `useState`/`useCallback` reichen für Dashboards dieser Größe |
+
+**Wenn ein Fork mehr braucht**, in dieser Reihenfolge: Migration + Index →
+nachgelagerte Auswertung (Read-Replica, Export-Job) → erst dann externe
+Infrastruktur. Der Audit-Trail bleibt dabei die Quelle der Wahrheit.
+

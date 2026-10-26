@@ -102,7 +102,7 @@ func newAuditedChain(t *testing.T, dsn string) http.Handler {
 	return middleware.RequestID(auth.Middleware(auth.MiddlewareConfig{
 		Verifier:    verifier,
 		Recorder:    repository,
-		PublicPaths: []string{"/healthz", "/api/v1/status"},
+		PublicPaths: []string{"/livez", "/readyz", "/api/v1/status"},
 	}, logger)(api.NewRouter(handler)))
 }
 
@@ -253,6 +253,24 @@ func TestAuditLogsEndpoint(t *testing.T) {
 	}
 	if payload.Items[0].Action == "" {
 		t.Fatalf("Eintrag ohne action: %+v", payload.Items[0])
+	}
+
+	// Lesezugriffe duerfen die Audit-Tabelle nicht fuellen (Loop-Schutz).
+	var auditReadRows int
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	countCtx, cancelCount := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCount()
+	if err := db.QueryRowContext(countCtx,
+		"SELECT count(*) FROM audit_logs WHERE action = 'audit.read'").Scan(&auditReadRows); err != nil {
+		t.Fatalf("count audit.read: %v", err)
+	}
+	if auditReadRows != 0 {
+		t.Fatalf("audit.read-Zeilen = %d, erwartet 0 (Lesezugriff gehoert ins App-Log)", auditReadRows)
 	}
 
 	// Ohne Admin-Rolle ist der Endpunkt gesperrt.

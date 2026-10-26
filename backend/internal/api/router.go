@@ -12,8 +12,9 @@ import (
 func NewRouter(h *Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// Oeffentlich
-	mux.HandleFunc("GET /healthz", h.Health)
+	// Oeffentlich: Liveness/Readiness (Kubernetes-/Docker-Standard) + Status
+	mux.HandleFunc("GET /livez", h.Livez)
+	mux.HandleFunc("GET /readyz", h.Readyz)
 	mux.HandleFunc("GET /api/v1/status", h.Status)
 
 	// Authentifiziert, keine Rollenpruefung

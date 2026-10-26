@@ -64,11 +64,11 @@ func TestMiddlewarePublicPathWithoutCredentials(t *testing.T) {
 
 	handler := auth.Middleware(auth.MiddlewareConfig{
 		Verifier:    verifier,
-		PublicPaths: []string{"/healthz"},
+		PublicPaths: []string{"/livez"},
 	}, testLogger())(okHandler())
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", http.NoBody))
+	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/livez", http.NoBody))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("Status = %d, erwartet 200", recorder.Code)
@@ -83,7 +83,7 @@ func TestMiddlewareRejectsMissingCredentials(t *testing.T) {
 
 	handler := auth.Middleware(auth.MiddlewareConfig{
 		Verifier:    verifier,
-		PublicPaths: []string{"/healthz"},
+		PublicPaths: []string{"/livez"},
 	}, testLogger())(protectedHandler(t))
 
 	for _, path := range []string{"/api/v1/data", "/does-not-exist"} {

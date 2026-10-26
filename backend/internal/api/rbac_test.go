@@ -36,7 +36,7 @@ func newTestChain(t *testing.T) http.Handler {
 
 	return auth.Middleware(auth.MiddlewareConfig{
 		Verifier:    verifier,
-		PublicPaths: []string{"/healthz", "/api/v1/status"},
+		PublicPaths: []string{"/livez", "/readyz", "/api/v1/status"},
 	}, logger)(api.NewRouter(handler))
 }
 

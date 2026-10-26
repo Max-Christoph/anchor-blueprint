@@ -56,6 +56,11 @@ type Config struct {
 	AllowedEmailDomains []string
 
 	CORSAllowedOrigins []string
+
+	// RateLimit schuetzt vor unautorisiertem Haemmern (401/403-Fehlversuche).
+	RateLimitEnabled   bool
+	RateLimitBurst     int
+	RateLimitPerMinute int
 }
 
 // Load liest die Konfiguration aus der Umgebung und validiert Pflichtwerte.
@@ -84,6 +89,7 @@ func Load() (Config, error) {
 		AuthBearerToken:     getString("AUTH_BEARER_TOKEN", ""),
 		AllowedEmailDomains: getCSV("AUTH_ALLOWED_EMAIL_DOMAINS"),
 		CORSAllowedOrigins:  getCSV("CORS_ALLOWED_ORIGINS"),
+		RateLimitEnabled:    getBool("RATE_LIMIT_ENABLED", true),
 		LogLevel:            parseLevel(getString("LOG_LEVEL", "info")),
 	}
 
@@ -120,6 +126,24 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DB_MAX_CONNS must be between 1 and 200, got %d", maxConns)
 	}
 	cfg.DBMaxConns = int32(maxConns)
+
+	burst, err := getInt("RATE_LIMIT_BURST", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	if burst < 1 || burst > 1000 {
+		return Config{}, fmt.Errorf("RATE_LIMIT_BURST must be between 1 and 1000, got %d", burst)
+	}
+	cfg.RateLimitBurst = burst
+
+	perMinute, err := getInt("RATE_LIMIT_PER_MINUTE", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	if perMinute < 1 || perMinute > 6000 {
+		return Config{}, fmt.Errorf("RATE_LIMIT_PER_MINUTE must be between 1 and 6000, got %d", perMinute)
+	}
+	cfg.RateLimitPerMinute = perMinute
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

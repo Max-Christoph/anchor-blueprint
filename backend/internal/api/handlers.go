@@ -23,6 +23,7 @@ const (
 	maxProcessBodyBytes = 1 << 20 // 1 MiB
 	maxProcessValues    = 10000
 	dbTimeout           = 3 * time.Second
+	readinessTimeout    = 4 * time.Second
 )
 
 // Handler buendelt alle Abhaengigkeiten der HTTP-Schicht.
@@ -45,32 +46,71 @@ func NewHandler(cfg config.Config, st *store.Store, wc *worker.Client, logger *s
 	}
 }
 
-type healthResponse struct {
-	Status   string `json:"status"`
-	Database string `json:"database"`
-	Version  string `json:"version"`
+type liveResponse struct {
+	Status  string `json:"status"`
+	Service string `json:"service"`
+	Version string `json:"version"`
 }
 
-// Health prueft die DB-Verbindung. 503 bei nicht erreichbarer Datenbank.
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+// Livez ist der Liveness-Check: 200, solange der Go-Prozess laeuft.
+// Bewusst ohne Abhaengigkeiten (keine DB-Abfrage) - fuer Docker/Kubernetes
+// Liveness-Probes, damit ein DB-Ausfall keinen Container-Neustart ausloest.
+func (h *Handler) Livez(w http.ResponseWriter, _ *http.Request) {
+	respondJSON(h.logger, w, http.StatusOK, liveResponse{
+		Status:  "ok",
+		Service: "anchor-blueprint-backend",
+		Version: h.cfg.Version,
+	})
+}
+
+type readinessChecks struct {
+	Database string `json:"database"`
+	Worker   string `json:"worker"`
+}
+
+type readyResponse struct {
+	Status  string          `json:"status"`
+	Checks  readinessChecks `json:"checks"`
+	Version string          `json:"version"`
+}
+
+// Readyz prueft die Abhaengigkeiten (DB-Pool und Worker) und antwortet mit
+// 503, solange eine davon nicht erreichbar ist.
+func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 	defer cancel()
 
-	if err := h.store.Ping(ctx); err != nil {
-		h.logger.Error("health check failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
-		respondJSON(h.logger, w, http.StatusServiceUnavailable, healthResponse{
-			Status:   "degraded",
-			Database: "down",
-			Version:  h.cfg.Version,
-		})
-		return
+	checks := readinessChecks{Database: "up", Worker: "up"}
+	ready := true
+
+	if h.store == nil {
+		checks.Database = "down"
+		ready = false
+	} else if err := h.store.Ping(ctx); err != nil {
+		checks.Database = "down"
+		ready = false
+		h.logger.Warn("readiness: database not reachable", "error", err,
+			"request_id", httpx.RequestIDFrom(r.Context()))
 	}
 
-	respondJSON(h.logger, w, http.StatusOK, healthResponse{
-		Status:   "ok",
-		Database: "up",
-		Version:  h.cfg.Version,
-	})
+	if h.worker == nil {
+		checks.Worker = "down"
+		ready = false
+	} else if err := h.worker.Health(ctx); err != nil {
+		checks.Worker = "down"
+		ready = false
+		h.logger.Warn("readiness: worker not reachable", "error", err,
+			"request_id", httpx.RequestIDFrom(r.Context()))
+	}
+
+	status := http.StatusOK
+	label := "ready"
+	if !ready {
+		status = http.StatusServiceUnavailable
+		label = "not_ready"
+	}
+
+	respondJSON(h.logger, w, status, readyResponse{Status: label, Checks: checks, Version: h.cfg.Version})
 }
 
 type dbStatus struct {
@@ -311,10 +351,16 @@ func (h *Handler) AuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.recordAudit(r, audit.ActionAuditRead, "GET /api/v1/protected/admin/audit-logs", http.StatusOK, map[string]any{
-		"limit": limit,
-		"count": len(entries),
-	})
+	// Bewusst NICHT in audit_logs: Lesezugriffe auf das Audit-Log wuerden sich
+	// bei Polling selbst fuellen. Nachweis bleibt im strukturierten App-Log.
+	identity, _ := httpx.IdentityFrom(r.Context())
+	h.logger.Info("audit log read",
+		"action", audit.ActionAuditRead,
+		"user", identity.Subject,
+		"limit", limit,
+		"count", len(entries),
+		"request_id", httpx.RequestIDFrom(r.Context()),
+	)
 
 	respondJSON(h.logger, w, http.StatusOK, auditListResponse{Items: entries, Count: len(entries)})
 }

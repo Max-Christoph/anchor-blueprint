@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -61,6 +62,27 @@ func New(baseURL string, timeout time.Duration) *Client {
 			Transport: transport,
 		},
 	}
+}
+
+// Health prueft die Erreichbarkeit des Workers (Readiness-Check).
+func (c *Client) Health(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", http.NoBody)
+	if err != nil {
+		return fmt.Errorf("build worker health request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: health status %d", ErrUnavailable, response.StatusCode)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	return nil
 }
 
 // Calc schickt die Werte an den Worker und dekodiert das Ergebnis.

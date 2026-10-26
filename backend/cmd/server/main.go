@@ -96,12 +96,18 @@ func run() error {
 	authCfg := auth.MiddlewareConfig{
 		Verifier:    verifier,
 		Recorder:    st,
-		PublicPaths: []string{"/healthz", "/api/v1/status"},
+		PublicPaths: []string{"/livez", "/readyz", "/api/v1/status"},
 	}
 
-	// Reihenfolge: RequestID -> Logging -> Recovery -> CORS -> Auth -> Router.
+	// Reihenfolge: RequestID -> Logging -> Recovery -> CORS -> RateLimit -> Auth -> Router.
 	var httpHandler http.Handler = api.NewRouter(handler)
 	httpHandler = auth.Middleware(authCfg, logger)(httpHandler)
+	if cfg.RateLimitEnabled {
+		httpHandler = middleware.RateLimit(middleware.RateLimitConfig{
+			Burst:     cfg.RateLimitBurst,
+			PerMinute: cfg.RateLimitPerMinute,
+		}, logger)(httpHandler)
+	}
 	httpHandler = middleware.CORS(cfg.CORSAllowedOrigins)(httpHandler)
 	httpHandler = middleware.Recovery(logger)(httpHandler)
 	httpHandler = middleware.Logging(logger)(httpHandler)

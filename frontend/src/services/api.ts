@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   AuditLogsResponse,
+  ReadinessResponse,
   DataResponse,
   HealthResponse,
   MeResponse,
@@ -90,7 +91,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  health: (): Promise<HealthResponse> => request<HealthResponse>("/healthz"),
+  livez: (): Promise<HealthResponse> => request<HealthResponse>("/livez"),
+
+  readyz: (): Promise<ReadinessResponse> => request<ReadinessResponse>("/readyz"),
 
   status: (): Promise<StatusResponse> => request<StatusResponse>("/api/v1/status"),
 
