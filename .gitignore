@@ -1,0 +1,53 @@
+# --- Secrets / Umgebung ---------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Go -------------------------------------------------------------------
+backend/bin/
+backend/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+vendor/
+
+# --- Node / Frontend ------------------------------------------------------
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Python / Worker ------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Docker / Daten -------------------------------------------------------
+docker-compose.override.yml
+pgdata/
+*.sql.gz
+
+# --- IDE / OS -------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs / temporaer -----------------------------------------------------
+*.log
+tmp/

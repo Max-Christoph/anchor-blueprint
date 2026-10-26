@@ -1,0 +1,197 @@
+// Package api enthaelt Router und Handler der REST-API.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"math"
+	"net/http"
+	"runtime"
+	"time"
+
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/config"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/middleware"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/store"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/worker"
+)
+
+const (
+	maxProcessBodyBytes = 1 << 20 // 1 MiB
+	maxProcessValues    = 10000
+	dbTimeout           = 3 * time.Second
+)
+
+// Handler buendelt alle Abhaengigkeiten der HTTP-Schicht.
+type Handler struct {
+	cfg     config.Config
+	store   *store.Store
+	worker  *worker.Client
+	logger  *slog.Logger
+	started time.Time
+}
+
+// NewHandler erzeugt den Handler-Satz.
+func NewHandler(cfg config.Config, st *store.Store, wc *worker.Client, logger *slog.Logger) *Handler {
+	return &Handler{
+		cfg:     cfg,
+		store:   st,
+		worker:  wc,
+		logger:  logger,
+		started: time.Now(),
+	}
+}
+
+type healthResponse struct {
+	Status   string `json:"status"`
+	Database string `json:"database"`
+	Version  string `json:"version"`
+}
+
+// Health prueft die DB-Verbindung. 503 bei nicht erreichbarer Datenbank.
+func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	if err := h.store.Ping(ctx); err != nil {
+		h.logger.Error("health check failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		respondJSON(h.logger, w, http.StatusServiceUnavailable, healthResponse{
+			Status:   "degraded",
+			Database: "down",
+			Version:  h.cfg.Version,
+		})
+		return
+	}
+
+	respondJSON(h.logger, w, http.StatusOK, healthResponse{
+		Status:   "ok",
+		Database: "up",
+		Version:  h.cfg.Version,
+	})
+}
+
+type dbStatus struct {
+	Status    string  `json:"status"`
+	LatencyMS float64 `json:"latency_ms"`
+}
+
+type statusResponse struct {
+	Service       string   `json:"service"`
+	Version       string   `json:"version"`
+	Environment   string   `json:"environment"`
+	UptimeSeconds float64  `json:"uptime_seconds"`
+	GoVersion     string   `json:"go_version"`
+	Goroutines    int      `json:"goroutines"`
+	NumCPU        int      `json:"num_cpu"`
+	MemoryAllocMB float64  `json:"memory_alloc_mb"`
+	Database      dbStatus `json:"database"`
+}
+
+// Status liefert Systemmetriken (oeffentlich, ohne Secrets).
+func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	dbState := dbStatus{Status: "up"}
+	pingStart := time.Now()
+	if err := h.store.Ping(ctx); err != nil {
+		dbState.Status = "down"
+		h.logger.Warn("status db ping failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+	}
+	dbState.LatencyMS = math.Round(float64(time.Since(pingStart).Microseconds())/1000.0*100) / 100
+
+	respondJSON(h.logger, w, http.StatusOK, statusResponse{
+		Service:       "enterprise-tool-backend",
+		Version:       h.cfg.Version,
+		Environment:   h.cfg.Env,
+		UptimeSeconds: math.Round(time.Since(h.started).Seconds()*100) / 100,
+		GoVersion:     runtime.Version(),
+		Goroutines:    runtime.NumGoroutine(),
+		NumCPU:        runtime.NumCPU(),
+		MemoryAllocMB: math.Round(float64(memory.Alloc)/(1024*1024)*100) / 100,
+		Database:      dbState,
+	})
+}
+
+type dataResponse struct {
+	Items []store.Entry `json:"items"`
+	Count int           `json:"count"`
+}
+
+// Data liest die Beispiel-Datensaetze (geschuetzt).
+func (h *Handler) Data(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	entries, err := h.store.ExampleEntries(ctx, 50)
+	if err != nil {
+		h.logger.Error("load entries failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		respondError(h.logger, w, r, http.StatusInternalServerError, "database_error", "could not load data")
+		return
+	}
+
+	respondJSON(h.logger, w, http.StatusOK, dataResponse{Items: entries, Count: len(entries)})
+}
+
+type processResponse struct {
+	Result      worker.CalcResult `json:"result"`
+	RequestedBy string            `json:"requested_by"`
+}
+
+// Process leitet den Auftrag an den Python-Worker weiter (geschuetzt).
+func (h *Handler) Process(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxProcessBodyBytes)
+
+	var request worker.CalcRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		respondError(h.logger, w, r, http.StatusBadRequest, "invalid_json", "body must be valid JSON matching the request schema")
+		return
+	}
+
+	if len(request.Values) == 0 {
+		respondError(h.logger, w, r, http.StatusBadRequest, "invalid_values", "values must contain at least one number")
+		return
+	}
+	if len(request.Values) > maxProcessValues {
+		respondError(h.logger, w, r, http.StatusRequestEntityTooLarge, "too_many_values", "at most 10000 values are allowed")
+		return
+	}
+	for _, value := range request.Values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			respondError(h.logger, w, r, http.StatusBadRequest, "invalid_values", "values must be finite numbers")
+			return
+		}
+	}
+
+	result, err := h.worker.Calc(r.Context(), request)
+	if err != nil {
+		if errors.Is(err, worker.ErrUnavailable) {
+			h.logger.Error("worker call failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+			respondError(h.logger, w, r, http.StatusBadGateway, "worker_unavailable", "worker service is not available")
+			return
+		}
+		h.logger.Error("worker call failed", "error", err, "request_id", middleware.RequestIDFrom(r.Context()))
+		respondError(h.logger, w, r, http.StatusInternalServerError, "worker_error", "worker call failed")
+		return
+	}
+
+	subject := "unknown"
+	if identity, ok := middleware.IdentityFrom(r.Context()); ok {
+		subject = identity.Subject
+	}
+
+	respondJSON(h.logger, w, http.StatusOK, processResponse{Result: result, RequestedBy: subject})
+}
+
+// NotFound ist der Deny-by-Default-Fallback: unbekannte Pfade liefern 404,
+// ohne interne Strukturen zu offenbaren.
+func (h *Handler) NotFound(w http.ResponseWriter, r *http.Request) {
+	respondError(h.logger, w, r, http.StatusNotFound, "not_found", "resource not found")
+}
