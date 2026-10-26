@@ -41,17 +41,17 @@ func TestRateLimitBlocksAfterBurstOfDenials(t *testing.T) {
 	handler := middleware.RateLimit(middleware.RateLimitConfig{Burst: 3, PerMinute: 60}, quietLogger())(guardedHandler())
 
 	for i := 0; i < 3; i++ {
-		if code := do(handler, "10.0.0.1", ""); code != http.StatusUnauthorized {
+		if code := do(handler, "198.51.100.1", ""); code != http.StatusUnauthorized {
 			t.Fatalf("Fehlversuch %d: Status = %d, erwartet 401", i+1, code)
 		}
 	}
 
-	if code := do(handler, "10.0.0.1", ""); code != http.StatusTooManyRequests {
+	if code := do(handler, "198.51.100.1", ""); code != http.StatusTooManyRequests {
 		t.Fatalf("Status nach erschoepftem Budget = %d, erwartet 429", code)
 	}
 
 	// Auch mit gueltigen Credentials ist der Client jetzt blockiert.
-	if code := do(handler, "10.0.0.1", "Bearer ok"); code != http.StatusTooManyRequests {
+	if code := do(handler, "198.51.100.1", "Bearer ok"); code != http.StatusTooManyRequests {
 		t.Fatalf("Status mit Credentials = %d, erwartet 429 (Budget erschoepft)", code)
 	}
 }
@@ -60,12 +60,12 @@ func TestRateLimitIsolatesClients(t *testing.T) {
 	handler := middleware.RateLimit(middleware.RateLimitConfig{Burst: 2, PerMinute: 60}, quietLogger())(guardedHandler())
 
 	for i := 0; i < 2; i++ {
-		do(handler, "10.0.0.2", "")
+		do(handler, "198.51.100.2", "")
 	}
-	if code := do(handler, "10.0.0.2", ""); code != http.StatusTooManyRequests {
+	if code := do(handler, "198.51.100.2", ""); code != http.StatusTooManyRequests {
 		t.Fatalf("Client A: Status = %d, erwartet 429", code)
 	}
-	if code := do(handler, "10.0.0.3", ""); code != http.StatusUnauthorized {
+	if code := do(handler, "198.51.100.3", ""); code != http.StatusUnauthorized {
 		t.Fatalf("Client B: Status = %d, erwartet 401 (eigenes Budget)", code)
 	}
 }
@@ -74,7 +74,7 @@ func TestRateLimitIgnoresSuccessfulRequests(t *testing.T) {
 	handler := middleware.RateLimit(middleware.RateLimitConfig{Burst: 2, PerMinute: 60}, quietLogger())(guardedHandler())
 
 	for i := 0; i < 20; i++ {
-		if code := do(handler, "10.0.0.4", "Bearer ok"); code != http.StatusOK {
+		if code := do(handler, "198.51.100.4", "Bearer ok"); code != http.StatusOK {
 			t.Fatalf("erfolgreicher Request %d: Status = %d, erwartet 200", i+1, code)
 		}
 	}

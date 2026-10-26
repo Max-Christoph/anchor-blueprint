@@ -39,6 +39,12 @@ venv/
 docker-compose.override.yml
 pgdata/
 *.sql.gz
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.p12
+*.pfx
 
 # --- IDE / OS -------------------------------------------------------------
 .idea/
