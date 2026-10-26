@@ -13,6 +13,7 @@ linters:
     - bodyclose
     - errorlint
     - gocritic
+    - gosec
     - noctx
   settings:
     gocritic:

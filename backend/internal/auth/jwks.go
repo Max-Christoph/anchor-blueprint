@@ -110,12 +110,14 @@ func (c *keyCache) cachedLocked(kid string) (*rsa.PublicKey, bool) {
 }
 
 func (c *keyCache) refreshLocked(ctx context.Context) error {
+	//nolint:gosec // G704: c.url stammt aus der Betreiber-Konfiguration (OIDC_JWKS_URL), nicht aus Nutzereingaben.
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("%w: build jwks request: %w", ErrKeyUnavailable, err)
 	}
 	request.Header.Set("Accept", "application/json")
 
+	//nolint:gosec // G704: konfigurierte JWKS-URL, Redirects im Client deaktiviert.
 	response, err := c.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("%w: fetch jwks: %w", ErrKeyUnavailable, err)

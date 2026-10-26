@@ -80,8 +80,17 @@ func NewJWTVerifier(cfg JWKSConfig) (*JWTVerifier, error) {
 		groupRoles[strings.ToLower(strings.TrimSpace(group))] = roles
 	}
 
+	// JWKS-Abruf ohne Redirects: die URL ist Betreiber-Konfiguration
+	// (OIDC_JWKS_URL); Redirects wuerden das Ziel unkontrollierbar machen.
+	jwksClient := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
 	return &JWTVerifier{
-		keys:        newKeyCache(cfg.JWKSURL, cfg.CacheTTL, &http.Client{Timeout: timeout}),
+		keys:        newKeyCache(cfg.JWKSURL, cfg.CacheTTL, jwksClient),
 		parser:      parser,
 		rolesClaim:  rolesClaim,
 		groupsClaim: groupsClaim,
