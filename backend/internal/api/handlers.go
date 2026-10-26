@@ -9,8 +9,10 @@ import (
 	"math"
 	"net/http"
 	"runtime"
+	"strconv"
 	"time"
 
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/audit"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/config"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/httpx"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/store"
@@ -267,12 +269,75 @@ func (h *Handler) AdminReset(w http.ResponseWriter, r *http.Request) {
 		"request_id", httpx.RequestIDFrom(r.Context()),
 	)
 
+	h.recordAudit(r, audit.ActionAdminReset, "POST /api/v1/protected/admin/reset", http.StatusOK, map[string]any{
+		"roles":       identity.Roles,
+		"auth_method": identity.Method,
+	})
+
 	respondJSON(h.logger, w, http.StatusOK, resetResponse{
 		Message:     "admin reset accepted (dry run)",
 		Reset:       true,
 		PerformedBy: identity.Subject,
 		PerformedAt: time.Now().UTC(),
 	})
+}
+
+type auditListResponse struct {
+	Items []audit.Log `json:"items"`
+	Count int         `json:"count"`
+}
+
+// AuditLogs liefert die neuesten Audit-Eintraege (nur Admin).
+func (h *Handler) AuditLogs(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		respondError(h.logger, w, r, http.StatusServiceUnavailable, "store_unavailable", "audit store not configured")
+		return
+	}
+
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	entries, err := h.store.ListAuditLogs(ctx, limit)
+	if err != nil {
+		h.logger.Error("load audit logs failed", "error", err, "request_id", httpx.RequestIDFrom(r.Context()))
+		respondError(h.logger, w, r, http.StatusInternalServerError, "audit_error", "could not load audit log")
+		return
+	}
+
+	h.recordAudit(r, audit.ActionAuditRead, "GET /api/v1/protected/admin/audit-logs", http.StatusOK, map[string]any{
+		"limit": limit,
+		"count": len(entries),
+	})
+
+	respondJSON(h.logger, w, http.StatusOK, auditListResponse{Items: entries, Count: len(entries)})
+}
+
+// recordAudit schreibt einen Audit-Eintrag; Fehler werden geloggt, nicht an
+// den Client durchgereicht (Audit darf den Request nicht kippen).
+func (h *Handler) recordAudit(r *http.Request, action, resource string, status int, details map[string]any) {
+	identity, _ := httpx.IdentityFrom(r.Context())
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := audit.RecorderFrom(r.Context()).Record(ctx, audit.Entry{
+		RequestID:  httpx.RequestIDFrom(r.Context()),
+		UserID:     identity.Subject,
+		Action:     action,
+		Resource:   resource,
+		StatusCode: status,
+		Details:    details,
+	}); err != nil {
+		h.logger.Warn("audit write failed", "action", action, "error", err,
+			"request_id", httpx.RequestIDFrom(r.Context()))
+	}
 }
 
 // NotFound ist der Deny-by-Default-Fallback: unbekannte Pfade liefern 404,

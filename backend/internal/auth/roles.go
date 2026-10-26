@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/audit"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/httpx"
 )
 
@@ -36,6 +39,8 @@ func require(values []string, allowed func(httpx.Identity) bool, kind string) fu
 				return
 			}
 
+			recordDenial(r, identity, kind, values)
+
 			slog.Warn("rbac rejected",
 				"kind", kind,
 				"required", values,
@@ -46,5 +51,31 @@ func require(values []string, allowed func(httpx.Identity) bool, kind string) fu
 			)
 			writeError(w, http.StatusForbidden, "forbidden", "insufficient permissions")
 		})
+	}
+}
+
+// recordDenial schreibt die 403-Entscheidung ins Audit-Log. Fehler beim
+// Schreiben werden geloggt, aber nicht an den Client weitergegeben.
+func recordDenial(r *http.Request, identity httpx.Identity, kind string, required []string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	err := audit.RecorderFrom(r.Context()).Record(ctx, audit.Entry{
+		RequestID:  httpx.RequestIDFrom(r.Context()),
+		UserID:     identity.Subject,
+		Action:     audit.ActionRBACDeny,
+		Resource:   r.Method + " " + r.URL.Path,
+		StatusCode: http.StatusForbidden,
+		Details: map[string]any{
+			"kind":           kind,
+			"required":       required,
+			"granted_roles":  identity.Roles,
+			"granted_groups": identity.Groups,
+			"auth_method":    identity.Method,
+		},
+	})
+	if err != nil {
+		slog.Warn("audit write failed", "action", audit.ActionRBACDeny, "error", err,
+			"request_id", httpx.RequestIDFrom(r.Context()))
 	}
 }

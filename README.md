@@ -1,9 +1,10 @@
 # Anchor Blueprint
 
 Produktionsnahes Monorepo-Template für ein internes Unternehmens-Tool:
-React-Frontend, Go-Backend mit OIDC/JWT-Authentifizierung **und RBAC**,
-Python-Worker, PostgreSQL 16 mit **versionierten Migrationen (golang-migrate)** —
-orchestriert über Docker Compose, abgesichert durch eine GitHub-Actions-CI.
+React-Frontend, Go-Backend mit OIDC/JWT-Authentifizierung, **RBAC** und
+**persistentem Audit-Log**, Python-Worker, PostgreSQL 16 mit **DDL-Migrationen
+(golang-migrate)** und separatem Seed-Command — orchestriert über Docker Compose,
+abgesichert durch eine GitHub-Actions-CI.
 
 | Schicht | Technik | Image |
 |---|---|---|
@@ -31,7 +32,8 @@ docker compose up -d
 
 Beim Start führt das Backend **automatisch** alle ausstehenden Migrationen aus
 (`DB_AUTO_MIGRATE=true`), bevor der HTTP-Server lauscht — die Datenbank darf
-also leer sein.
+also leer sein. Migrationen enthalten **nur DDL**; Beispieldaten kommen aus dem
+separaten Seed-Schritt (`DB_SEED_DEV_DATA=true` beim Start oder `make seed`).
 
 ### Makefile
 
@@ -39,7 +41,8 @@ also leer sein.
 make up        # .env anlegen (falls fehlend), Stack im Hintergrund starten
 make down      # Stack stoppen (Volumes bleiben)
 make test      # Go- (inkl. RBAC + Migrationen), Frontend- und Worker-Tests
-make smoke     # HTTP-Smoke-Test inkl. RBAC-Matrix
+make smoke     # HTTP-Smoke-Test inkl. RBAC-Matrix und Audit-Log
+make seed      # Dev-Beispieldaten idempotent einspielen
 make lint      # go vet + golangci-lint + ruff
 make logs      # Logs folgen
 make ps        # Container-Status
@@ -93,14 +96,17 @@ anchor-blueprint/
 ├── .github/workflows/ci.yml     # CI: Backend (+Postgres-Service), Frontend, Worker, Security
 ├── scripts/smoke-test.sh        # HTTP-Smoke-Test inkl. RBAC-Matrix
 ├── backend/
-│   ├── cmd/server/main.go       # Config, Verifier, Migrationen, Graceful Shutdown
-│   ├── migrations/              # versionierte SQL-Migrationen + embed.FS
+│   ├── cmd/server/main.go       # Config, Verifier, Migrationen, Seed, Graceful Shutdown
+│   ├── cmd/seed/main.go          # Standalone-Seed (Dev-Beispieldaten)
+│   ├── migrations/              # DDL-Migrationen + embed.FS (keine Seed-Daten!)
 │   │   ├── 000001_init_schema.{up,down}.sql
-│   │   ├── 000002_seed_data.{up,down}.sql
+│   │   ├── 000002_create_audit_logs.{up,down}.sql
 │   │   └── embed.go
-│   ├── internal/api/            # Router, Handler (inkl. RBAC-Endpunkte)
-│   ├── internal/auth/           # JWT/JWKS, Dev-Header, RBAC-Middleware
+│   ├── internal/api/            # Router, Handler (inkl. RBAC- und Audit-Endpunkte)
+│   ├── internal/audit/          # Audit-Eintrag, Recorder-Interface, Context-Helfer
+│   ├── internal/auth/           # JWT/JWKS, Dev-Header, RBAC-Middleware (schreibt Audit)
 │   ├── internal/httpx/          # Context-Helfer (Request-ID, Identity + Rollen-Helper)
+│   ├── internal/seed/           # idempotente Dev-Beispieldaten
 │   ├── internal/middleware/     # RequestID, Logging, Recovery, CORS
 │   ├── internal/migrate/        # golang-migrate-Runner (embed.FS → DB)
 │   ├── internal/store/          # pgxpool-Repository
@@ -109,7 +115,7 @@ anchor-blueprint/
 │   └── Dockerfile               # Multi-Stage, non-root (UID 10001)
 ├── frontend/
 │   ├── src/components/          # Layout, StatusBadge, DataTable, ProcessPanel,
-│   │                            # RoleSwitcher, Notice
+│   │                            # RoleSwitcher (nur Dev), RoleInfo (JWT), Notice
 │   ├── src/services/api.ts      # typisierter Client (Bearer/Dev-Header + X-User-Roles)
 │   ├── src/App.tsx              # Dashboard, Rollenwahl, 403-Feedback
 │   ├── nginx.conf               # SPA-Fallback, /api-Proxy, CSP, Security-Header
@@ -198,42 +204,69 @@ mux.Handle("POST /api/v1/protected/admin/reset",
 | GET | `/api/v1/protected/operator` | `Admin` **oder** `Operator` |
 | POST | `/api/v1/protected/admin/reset` | ausschließlich `Admin` (Dry-Run) |
 
-Die Rollenmatrix ist im Smoke-Test und in `internal/api/rbac_test.go`
-abgedeckt (401 ohne Credentials, 403 bei falscher Rolle, 200 bei passender,
-mehrere Rollen, Groß-/Kleinschreibung).
+Die Rollenmatrix ist im Smoke-Test, in `internal/auth/roles_test.go` und in
+`internal/api/rbac_test.go` abgedeckt (401 ohne Credentials, 403 bei falscher
+Rolle, 200 bei passender, mehrere Rollen, Groß-/Kleinschreibung).
+
+### Audit-Log (Postgres)
+
+Jede 403-Entscheidung der RBAC-Middleware und jede sensitive Aktion landet in
+`audit_logs` (Migration `000002`):
+
+| Spalte | Inhalt |
+|---|---|
+| `id`, `timestamp` | Primärschlüssel, Zeitpunkt (Default `now()`) |
+| `request_id` | Request-ID aus dem Context (Korrelation mit Logs) |
+| `user_id` | `sub` bzw. `X-User-Email` |
+| `action` | `rbac.deny`, `admin.reset`, `audit.read` |
+| `resource` | `METHOD /pfad` |
+| `status_code` | 403 bzw. 200 |
+| `details` (JSONB) | `required`, `granted_roles`, `granted_groups`, `auth_method`, … |
+
+Der Schreibvorgang ist **direkt (synchron) mit 2 s Timeout**: bei so
+seltenen, sicherheitsrelevanten Ereignissen ist Nachvollziehbarkeit wichtiger
+als Latenz. Schreibfehler werden geloggt, kippen den Request aber nicht.
+Lesen lässt sich das Log über `GET /api/v1/protected/admin/audit-logs?limit=50`
+(nur `Admin`).
 
 ---
 
-## 6. Datenbank-Migrationen (golang-migrate)
+## 6. Migrationen, Seed und Schema-Lifecycle
 
-- Migrationen liegen in `backend/migrations/` als
-  `<version>_<name>.{up,down}.sql` und werden per `embed.FS` ins Binary
-  kompiliert (`internal/migrate`).
-- Beim Start: DB-Ping (mit Retry) → `migrate.Up()` → HTTP-Server. Jede
-  Migration läuft in einer eigenen Transaktion; der Stand steht in
-  `schema_migrations` (dirty-Zustand wird als Startfehler behandelt).
-- `DB_AUTO_MIGRATE=false` deaktiviert den Lauf (z. B. wenn ein externer
-  Migrationsjob das Schema verwaltet).
-- `docker-compose.yml` mountet **kein** `init.sql` mehr — die Datenbank startet
-  leer und wird vom Go-Prozess aufgebaut.
+### Migrationen (nur DDL)
 
-Neue Migration anlegen:
+- `backend/migrations/<version>_<name>.{up,down}.sql`, per `embed.FS` ins Binary
+  kompiliert. **Inhalt ausschließlich DDL** (Tabellen, Indizes, Constraints) —
+  keine Beispieldaten, keine fachlichen Inserts.
+- Beim Start: DB-Ping (Retry) → `migrate.Up()` → HTTP-Server. Jede Migration läuft
+  in einer Transaktion, Stand in `schema_migrations`; `dirty` ist ein Startfehler.
+- `DB_AUTO_MIGRATE=false` deaktiviert den Lauf (externer Migrationsjob).
+- `docker-compose.yml` mountet **kein** `init.sql` mehr.
 
-```bash
-cd backend/migrations
-touch 000003_add_reports.{up,down}.sql   # fortlaufende Nummer, down nicht vergessen
-cd .. && go test ./migrations ./internal/migrate
-```
+### Seed (separat, idempotent)
 
-Der Integrationstest legt eine temporäre Datenbank an, spielt die Migrationen
-ein, prüft Seed-Daten, Version und Idempotenz und räumt wieder auf:
+Beispieldaten gehören nicht in die Versionierung, sondern in `internal/seed`:
 
 ```bash
-TEST_DATABASE_URL="postgres://anchor:change-me-in-development@127.0.0.1:5432/anchor?sslmode=disable" \
-  go test -race -v ./internal/migrate
+make seed                                     # im laufenden Container
+# oder beim Start:
+DB_SEED_DEV_DATA=true docker compose up -d
+# oder direkt:
+cd backend && DATABASE_URL="postgres://…" go run ./cmd/seed
 ```
 
----
+`seed.DevData()` schreibt `INSERT … ON CONFLICT (name) DO NOTHING` und ist damit
+beliebig oft ausführbar. Der Code-Default ist **aus** (`DB_SEED_DEV_DATA=false`);
+Compose setzt für lokale Entwicklung `true`.
+
+### Rollback
+
+```bash
+cd backend && TEST_DATABASE_URL="postgres://…" go test -run TestDown ./internal/migrate
+```
+
+`migrate.Down()` rollt alle Migrationen zurück (Tests nutzen das, um „up →
+Schema da, down → Schema weg, up → wieder da" zu belegen).
 
 ## 7. API-Verträge
 
@@ -247,7 +280,8 @@ TEST_DATABASE_URL="postgres://anchor:change-me-in-development@127.0.0.1:5432/anc
 | GET | `/api/v1/data` | ✅ | – | Beispiel-Datensätze |
 | POST | `/api/v1/process` | ✅ | – | `{"values":[1,2,3]}` → Worker |
 | GET | `/api/v1/protected/operator` | ✅ | Admin, Operator | RBAC-Demo |
-| POST | `/api/v1/protected/admin/reset` | ✅ | Admin | RBAC-Demo (Dry-Run) |
+| POST | `/api/v1/protected/admin/reset` | ✅ | Admin | RBAC-Demo (Dry-Run, wird auditiert) |
+| GET | `/api/v1/protected/admin/audit-logs` | ✅ | Admin | letzte Audit-Einträge (`?limit=`) |
 
 Fehlerformat:
 
@@ -265,17 +299,18 @@ Fehlerformat:
 
 ---
 
-## 8. Frontend
+## 8. Frontend: Dev- und JWT-Modus getrennt
 
-- Kopfzeile zeigt die **aktiven Rollen** aus `/api/v1/me`.
-- `RoleSwitcher` setzt die Rollen für alle folgenden Requests
-  (`X-User-Roles`) und demonstriert RBAC direkt im Browser:
-  - `GET /protected/operator` → 200 bei `Operator`/`Admin`, sonst roter Hinweis
-  - `POST /protected/admin/reset` → 403-Hinweis, solange `Admin` fehlt
-- Fehler erscheinen als `Notice` (grün = Erfolg, rot = 403/Fehler) mit
-  Statuscode und Rollenliste.
+Das UI richtet sich nach `auth_mode` aus `GET /api/v1/status`:
 
----
+| `auth_mode` | UI |
+|---|---|
+| `dev_header` / `mock` | `RoleSwitcher` sichtbar: Rollen umschalten, `GET /protected/operator` und `POST /protected/admin/reset` auslösen; 403 erscheint rot, 200 grün |
+| `jwt` | **kein** Umschalter: Rollen nur lesend als Badges (`RoleInfo`), Hinweis „Rollen werden über OIDC-Token gesteuert" |
+
+Technisch sendet der API-Client `X-User-Roles` ausschließlich im Dev-Modus
+(`setRoleHeaderEnabled`), sodass im JWT-Modus kein irreführender Header
+mitgeht. Rollen-Badges im Header stammen aus `/api/v1/me`.
 
 ## 9. Konfiguration
 
@@ -284,7 +319,8 @@ Fehlerformat:
 | `BIND_ADDRESS` | `127.0.0.1` | Host-Bind für alle Ports |
 | `FRONTEND_PORT` / `BACKEND_PORT` / `WORKER_PORT` / `DB_PORT` | `3000` / `8080` / `8000` / `5432` | Host-Ports |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | `anchor` / `anchor` / `change-me-in-development` | DB-Zugang |
-| `DB_AUTO_MIGRATE` | `true` | Migrationen beim Start anwenden |
+| `DB_AUTO_MIGRATE` | `true` | DDL-Migrationen beim Start anwenden |
+| `DB_SEED_DEV_DATA` | `compose: true`, Code: `false` | Dev-Beispieldaten beim Start einspielen |
 | `AUTH_MODE` | `dev_header` in Compose, `jwt` im Code | Auth-Verfahren |
 | `AUTH_ROLES_CLAIM` / `AUTH_GROUPS_CLAIM` | `roles` / `groups` | RBAC-Claims |
 | `OIDC_GROUP_ROLE_MAP` | leer | Gruppen → Rollen (`id=Role;id2=RoleA,RoleB`) |
@@ -366,6 +402,8 @@ Requests bis `SHUTDOWN_TIMEOUT`, dann Pool schließen. Im Log:
 | `403` auf `/api/v1/protected/*` | Rolle fehlt — im Dev-Modus `X-User-Roles` prüfen, im JWT-Modus Rolle/Gruppen-Mapping im IdP. |
 | `503 auth_backend_unavailable` | JWKS nicht erreichbar (`OIDC_JWKS_URL`). |
 | Änderungen an Migrationen wirken nicht | bereits angewendete Versionen laufen nicht erneut → neue Migration anlegen. |
+| Datenbank leer, keine Beispieldaten | Seed separat ausführen (`make seed` bzw. `DB_SEED_DEV_DATA=true`) — Migrationen liefern nur DDL. |
+| `audit_logs` bleibt leer | Audit wird nur bei 403 und bei `admin.reset`/`audit.read` geschrieben; Schreibfehler stehen als `audit write failed` im Backend-Log. |
 | `502` auf `/api/v1/process` | Worker nicht erreichbar (`docker compose logs worker`). |
 
 ---

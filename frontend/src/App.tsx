@@ -5,9 +5,10 @@ import { Layout } from "./components/Layout";
 import { MetricCard } from "./components/MetricCard";
 import { Notice, type NoticeState } from "./components/Notice";
 import { ProcessPanel } from "./components/ProcessPanel";
+import { RoleInfo } from "./components/RoleInfo";
 import { RoleSwitcher } from "./components/RoleSwitcher";
 import type { BadgeTone } from "./components/StatusBadge";
-import { ApiError, api, describeError, setActiveRoles } from "./services/api";
+import { ApiError, api, describeError, setActiveRoles, setRoleHeaderEnabled } from "./services/api";
 import type { CalcResult, DataResponse, MeResponse, StatusResponse } from "./services/types";
 
 const POLL_INTERVAL_MS = 15_000;
@@ -106,13 +107,22 @@ export default function App() {
     }
   }, [roles]);
 
-  // Rollenwechsel wirkt auf alle folgenden Requests.
+  const authMode = status?.auth_mode ?? "";
+  const devMode = authMode === "dev_header" || authMode === "mock";
+
+  // Rollen-Header nur im Dev-Modus; im JWT-Modus bleiben Rollen read-only.
   useEffect(() => {
-    setActiveRoles(roles);
+    setRoleHeaderEnabled(devMode);
+    setActiveRoles(devMode ? roles : []);
+    void loadMe();
+    void loadData();
+  }, [devMode, roles, loadMe, loadData]);
+
+  useEffect(() => {
     void loadStatus();
     void loadMe();
     void loadData();
-  }, [roles, loadStatus, loadMe, loadData]);
+  }, [loadStatus, loadMe, loadData]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -132,7 +142,7 @@ export default function App() {
       statusTone={badgeTone}
       statusLabel={badgeLabel}
       version={status?.version ?? "—"}
-      roles={me?.roles ?? roles}
+      roles={me?.roles ?? (devMode ? roles : [])}
     >
       {notice !== null && <Notice notice={notice} onDismiss={() => setNotice(null)} />}
 
@@ -159,16 +169,20 @@ export default function App() {
         />
       </section>
 
-      <RoleSwitcher
-        roles={roles}
-        busy={actionBusy}
-        onChange={(next) => {
-          setNotice(null);
-          setRoles(next);
-        }}
-        onOperatorAction={() => void runOperatorAction()}
-        onAdminReset={() => void runAdminReset()}
-      />
+      {devMode ? (
+        <RoleSwitcher
+          roles={roles}
+          busy={actionBusy}
+          onChange={(next) => {
+            setNotice(null);
+            setRoles(next);
+          }}
+          onOperatorAction={() => void runOperatorAction()}
+          onAdminReset={() => void runAdminReset()}
+        />
+      ) : (
+        <RoleInfo roles={me?.roles ?? []} authMode={authMode} authenticated={me !== null} />
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <DataTable

@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  AuditLogsResponse,
   DataResponse,
   HealthResponse,
   MeResponse,
@@ -20,6 +21,14 @@ const BEARER_TOKEN: string = import.meta.env.VITE_BEARER_TOKEN ?? "";
 
 /** Aktive Rollen fuer den Dev-Modus (RBAC-Demonstration im Browser). */
 let activeRoles: string[] = [];
+
+/** Nur im Dev-Modus sendet der Client X-User-Roles (im JWT-Modus sinnlos). */
+let roleHeaderEnabled = true;
+
+/** Schaltet den X-User-Roles-Header (im JWT-Modus: aus). */
+export function setRoleHeaderEnabled(enabled: boolean): void {
+  roleHeaderEnabled = enabled;
+}
 
 /** Setzt die Rollen, die als X-User-Roles mitgesendet werden. */
 export function setActiveRoles(roles: string[]): void {
@@ -52,7 +61,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   } else {
     headers.set("X-User-Email", DEMO_USER_EMAIL);
   }
-  if (activeRoles.length > 0) {
+  if (roleHeaderEnabled && activeRoles.length > 0) {
     headers.set("X-User-Roles", activeRoles.join(","));
   }
   if (init.body !== undefined) {
@@ -99,6 +108,9 @@ export const api = {
 
   adminReset: (): Promise<ResetResponse> =>
     request<ResetResponse>("/api/v1/protected/admin/reset", { method: "POST" }),
+
+  auditLogs: (limit = 10): Promise<AuditLogsResponse> =>
+    request<AuditLogsResponse>(`/api/v1/protected/admin/audit-logs?limit=${limit}`),
 };
 
 /** Wandelt unbekannte Fehler in eine anzeigbare Meldung. */

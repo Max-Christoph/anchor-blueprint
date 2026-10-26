@@ -82,6 +82,23 @@ export interface ResetResponse {
   performed_at: string;
 }
 
+/** GET /api/v1/protected/admin/audit-logs */
+export interface AuditLogEntry {
+  id: number;
+  timestamp: string;
+  request_id: string;
+  user_id: string;
+  action: string;
+  resource: string;
+  status_code: number;
+  details: Record<string, unknown>;
+}
+
+export interface AuditLogsResponse {
+  items: AuditLogEntry[];
+  count: number;
+}
+
 export interface ApiErrorBody {
   error: {
     code: string;

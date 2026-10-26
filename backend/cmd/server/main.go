@@ -17,6 +17,7 @@ import (
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/config"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/middleware"
 	migrationsrunner "github.com/Max-Christoph/anchor-blueprint/backend/internal/migrate"
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/seed"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/store"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/worker"
 )
@@ -79,11 +80,22 @@ func run() error {
 		logger.Warn("DB_AUTO_MIGRATE=false - schema migrations are not applied at startup")
 	}
 
+	if cfg.DBSeedDevData {
+		seedCtx, cancelSeed := context.WithTimeout(ctx, 30*time.Second)
+		rows, err := seed.DevData(seedCtx, cfg.DatabaseURL)
+		cancelSeed()
+		if err != nil {
+			return fmt.Errorf("dev seed: %w", err)
+		}
+		logger.Info("dev seed applied", "rows_in_table", rows)
+	}
+
 	workerClient := worker.New(cfg.WorkerURL, cfg.WorkerTimeout)
 	handler := api.NewHandler(cfg, st, workerClient, logger)
 
 	authCfg := auth.MiddlewareConfig{
 		Verifier:    verifier,
+		Recorder:    st,
 		PublicPaths: []string{"/healthz", "/api/v1/status"},
 	}
 

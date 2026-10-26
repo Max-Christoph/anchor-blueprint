@@ -36,7 +36,7 @@ services:
     build:
       context: ./backend
       args:
-        APP_VERSION: ${APP_VERSION:-0.3.0}
+        APP_VERSION: ${APP_VERSION:-0.4.0}
     restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-development}
@@ -50,6 +50,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-anchor}:${POSTGRES_PASSWORD:-change-me-in-development}@db:5432/${POSTGRES_DB:-anchor}?sslmode=disable
       DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
       DB_AUTO_MIGRATE: ${DB_AUTO_MIGRATE:-true}
+      # Nur lokal: Beispieldaten nach den Migrationen einspielen (DDL bleibt migrations/)
+      DB_SEED_DEV_DATA: ${DB_SEED_DEV_DATA:-true}
       WORKER_URL: http://worker:8000
       WORKER_TIMEOUT: ${WORKER_TIMEOUT:-10s}
       # Auth: Standard im Code ist jwt. Lokal ohne OIDC laeuft dev_header.

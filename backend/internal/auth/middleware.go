@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/audit"
 	"github.com/Max-Christoph/anchor-blueprint/backend/internal/httpx"
 )
 
 // MiddlewareConfig konfiguriert die Auth-Middleware.
 type MiddlewareConfig struct {
 	Verifier Verifier
+	// Recorder ist optional; ohne Recorder wird nicht auditiert.
+	Recorder audit.Recorder
 	// PublicPaths sind exakt diese Pfade und ohne Authentifizierung erreichbar.
 	PublicPaths []string
 }
@@ -65,7 +68,9 @@ func Middleware(cfg MiddlewareConfig, logger *slog.Logger) func(http.Handler) ht
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(httpx.WithIdentity(r.Context(), identity)))
+			ctx := httpx.WithIdentity(r.Context(), identity)
+			ctx = audit.WithRecorder(ctx, cfg.Recorder)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

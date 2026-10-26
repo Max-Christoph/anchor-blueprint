@@ -26,6 +26,8 @@ func NewRouter(h *Handler) *http.ServeMux {
 		auth.RequireRole(roleAdmin, roleOperator)(http.HandlerFunc(h.OperatorAction)))
 	mux.Handle("POST /api/v1/protected/admin/reset",
 		auth.RequireRole(roleAdmin)(http.HandlerFunc(h.AdminReset)))
+	mux.Handle("GET /api/v1/protected/admin/audit-logs",
+		auth.RequireRole(roleAdmin)(http.HandlerFunc(h.AuditLogs)))
 
 	// Fallback fuer alles andere.
 	mux.HandleFunc("/", h.NotFound)

@@ -4,10 +4,13 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Max-Christoph/anchor-blueprint/backend/internal/audit"
 )
 
 // Entry ist ein Beispiel-Datensatz aus der Tabelle example_entries.
@@ -116,4 +119,70 @@ func (s *Store) Close() {
 		return
 	}
 	s.pool.Close()
+}
+
+// Record schreibt einen Audit-Eintrag nach audit_logs (Implementierung von
+// audit.Recorder). Details landen als JSONB in der Tabelle.
+func (s *Store) Record(ctx context.Context, entry audit.Entry) error {
+	if s == nil || s.pool == nil {
+		return fmt.Errorf("audit: store not initialised")
+	}
+	if entry.Action == "" {
+		return fmt.Errorf("audit: action must not be empty")
+	}
+
+	details, err := json.Marshal(entry.Details)
+	if err != nil {
+		return fmt.Errorf("audit: marshal details: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO audit_logs (request_id, user_id, action, resource, status_code, details)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+		entry.RequestID, entry.UserID, entry.Action, entry.Resource, entry.StatusCode, string(details),
+	)
+	if err != nil {
+		return fmt.Errorf("audit: insert: %w", err)
+	}
+	return nil
+}
+
+// ListAuditLogs liefert die neuesten Audit-Eintraege (maximal 200).
+func (s *Store) ListAuditLogs(ctx context.Context, limit int) ([]audit.Log, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("audit: store not initialised")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, "timestamp", request_id, user_id, action, resource, status_code, details
+		   FROM audit_logs
+		  ORDER BY id DESC
+		  LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("audit: query: %w", err)
+	}
+	defer rows.Close()
+
+	logs := make([]audit.Log, 0, limit)
+	for rows.Next() {
+		var (
+			entry   audit.Log
+			details []byte
+		)
+		if err := rows.Scan(&entry.ID, &entry.Timestamp, &entry.RequestID, &entry.UserID,
+			&entry.Action, &entry.Resource, &entry.StatusCode, &details); err != nil {
+			return nil, fmt.Errorf("audit: scan: %w", err)
+		}
+		if len(details) > 0 {
+			_ = json.Unmarshal(details, &entry.Details)
+		}
+		logs = append(logs, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("audit: iterate: %w", err)
+	}
+	return logs, nil
 }

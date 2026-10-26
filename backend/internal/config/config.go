@@ -29,6 +29,8 @@ type Config struct {
 	DatabaseURL   string
 	DBMaxConns    int32
 	DBAutoMigrate bool
+	// DBSeedDevData schreibt beim Start Entwicklungs-Beispieldaten (Seed).
+	DBSeedDevData bool
 
 	WorkerURL     string
 	WorkerTimeout time.Duration
@@ -75,6 +77,7 @@ func Load() (Config, error) {
 		AuthGroupRoleMap:    getGroupRoleMap("OIDC_GROUP_ROLE_MAP"),
 		AuthDevDefaultRole:  getString("AUTH_DEV_DEFAULT_ROLE", "User"),
 		DBAutoMigrate:       getBool("DB_AUTO_MIGRATE", true),
+		DBSeedDevData:       getBool("DB_SEED_DEV_DATA", false),
 		OIDCIssuer:          getString("OIDC_ISSUER", ""),
 		OIDCAudience:        getString("OIDC_AUDIENCE", ""),
 		OIDCJWKSURL:         getString("OIDC_JWKS_URL", ""),

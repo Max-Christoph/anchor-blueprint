@@ -51,6 +51,23 @@ status_code() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@"
 }
 
+check_body() {
+  local name="$1"
+  local needle="$2"
+  local body="$3"
+
+  if [[ "$body" == *"$needle"* ]]; then
+    printf '  [ok]   %-56s %s
+' "$name" "gefunden"
+    PASSED=$((PASSED + 1))
+    return
+  fi
+
+  printf '  [FAIL] %-56s %s fehlt im Body
+' "$name" "$needle"
+  FAILED=$((FAILED + 1))
+}
+
 echo "Smoke-Test gegen Backend ${BACKEND} (AUTH_MODE=${AUTH_MODE})"
 
 # --- Oeffentliche Endpunkte ------------------------------------------------
@@ -65,6 +82,7 @@ check "GET /does-not-exist (ohne Auth)"      401 "$(status_code "${BACKEND}/does
 if [[ "$AUTH_MODE" == "jwt" ]]; then
   check "GET /api/v1/data (X-User-Email ignoriert)" 401 \
     "$(status_code -H "X-User-Email: ${DEMO_USER_EMAIL}" "${BACKEND}/api/v1/data")"
+  check "audit-logs ohne Token"            401 "$(status_code "${BACKEND}/api/v1/protected/admin/audit-logs")"
 
   if [[ -n "$SMOKE_BEARER_TOKEN" ]]; then
     AUTH_HEADER=(-H "Authorization: Bearer ${SMOKE_BEARER_TOKEN}")
@@ -105,6 +123,17 @@ else
   check "admin/reset (Rolle User)"         403 "$(status_code -X POST "${USER[@]}" "${BACKEND}/api/v1/protected/admin/reset")"
   check "admin/reset (Rolle Operator)"     403 "$(status_code -X POST "${OPERATOR[@]}" "${BACKEND}/api/v1/protected/admin/reset")"
   check "admin/reset (Rolle Admin)"        200 "$(status_code -X POST "${ADMIN[@]}" "${BACKEND}/api/v1/protected/admin/reset")"
+
+  # --- Audit-Log und Seed -------------------------------------------------
+  curl -s -o /dev/null -X POST "${OPERATOR[@]}" "${BACKEND}/api/v1/protected/admin/reset"
+  check "audit-logs (Rolle Operator)"      403 "$(status_code "${OPERATOR[@]}" "${BACKEND}/api/v1/protected/admin/audit-logs")"
+  check "audit-logs (Rolle Admin)"         200 "$(status_code "${ADMIN[@]}" "${BACKEND}/api/v1/protected/admin/audit-logs?limit=20")"
+  check_body "audit-logs enthaelt rbac.deny" '"action":"rbac.deny"' \
+    "$(curl -s "${ADMIN[@]}" "${BACKEND}/api/v1/protected/admin/audit-logs?limit=20")"
+  check_body "audit-logs enthaelt admin.reset" '"action":"admin.reset"' \
+    "$(curl -s "${ADMIN[@]}" "${BACKEND}/api/v1/protected/admin/audit-logs?limit=20")"
+  check_body "Dev-Seed vorhanden" "Onboarding-Automatisierung" \
+    "$(curl -s "${USER[@]}" "${BACKEND}/api/v1/data")"
 fi
 
 # --- Worker und Frontend --------------------------------------------------

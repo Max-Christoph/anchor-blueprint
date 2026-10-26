@@ -8,7 +8,7 @@ WORKER_VENV := worker/.venv
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down logs ps rebuild clean smoke test test-backend test-frontend test-worker lint fmt venv
+.PHONY: help up down logs ps rebuild clean smoke test test-backend test-frontend test-worker lint fmt venv seed
 
 help: ## Zeigt alle Targets
 	@grep -hE '^[a-zA-Z_.-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -34,8 +34,11 @@ rebuild: ## Images ohne Cache neu bauen und starten
 clean: ## Stack inkl. Volumes entfernen (Datenverlust!)
 	$(COMPOSE) down -v --remove-orphans
 
-smoke: ## HTTP-Smoke-Test gegen den laufenden Stack
+smoke: ## HTTP-Smoke-Test gegen den laufenden Stack (inkl. RBAC/Audit)
 	./scripts/smoke-test.sh
+
+seed: ## Dev-Beispieldaten idempotent einspielen (im laufenden Backend-Container)
+	$(COMPOSE) exec -T backend /usr/local/bin/seed
 
 test: test-backend test-frontend test-worker ## Alle Tests lokal (Go, Frontend, Worker)
 	@echo "Alle Tests erfolgreich."

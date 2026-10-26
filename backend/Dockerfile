@@ -17,7 +17,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build \
         -trimpath \
         -ldflags="-s -w -X main.version=${APP_VERSION}" \
-        -o /out/server ./cmd/server
+        -o /out/server ./cmd/server \
+    && CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath \
+        -ldflags="-s -w" \
+        -o /out/seed ./cmd/seed
 
 # --- Runtime-Stage ---------------------------------------------------------
 FROM alpine:3.22 AS runtime
@@ -27,6 +31,7 @@ RUN apk add --no-cache ca-certificates tzdata \
     && adduser -S -u 10001 -G app -h /app app
 
 COPY --from=build /out/server /usr/local/bin/server
+COPY --from=build /out/seed /usr/local/bin/seed
 
 USER 10001:10001
 WORKDIR /app

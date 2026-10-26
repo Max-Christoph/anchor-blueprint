@@ -24,6 +24,18 @@ const MigrationsTable = "schema_migrations"
 // Run spielt alle ausstehenden Migrationen ein und liefert die danach
 // gueltige Schemaversion. ErrNoChange ist kein Fehler.
 func Run(ctx context.Context, dsn string) (uint, error) {
+	return apply(ctx, dsn, func(runner *migrate.Migrate) error { return runner.Up() })
+}
+
+// Down rollt alle Migrationen zurueck (leere Datenbank). Hauptsaechlich fuer
+// Tests und lokale Resets gedacht.
+func Down(ctx context.Context, dsn string) (uint, error) {
+	return apply(ctx, dsn, func(runner *migrate.Migrate) error { return runner.Down() })
+}
+
+// apply oeffnet die Datenbank, baut Source/Driver und fuehrt die uebergebene
+// Operation aus.
+func apply(ctx context.Context, dsn string, operation func(*migrate.Migrate) error) (uint, error) {
 	if dsn == "" {
 		return 0, errors.New("migrate: empty dsn")
 	}
@@ -55,12 +67,15 @@ func Run(ctx context.Context, dsn string) (uint, error) {
 		return 0, fmt.Errorf("migrate: create runner: %w", err)
 	}
 
-	if err := runner.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+	if err := operation(runner); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return 0, fmt.Errorf("migrate: apply migrations: %w", err)
 	}
 
 	version, dirty, err := runner.Version()
 	if err != nil {
+		if errors.Is(err, migrate.ErrNilVersion) {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("migrate: read schema version: %w", err)
 	}
 	if dirty {
